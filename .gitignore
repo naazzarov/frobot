@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+*.sqlite*
+*.db
+*.db-*
+*.log
+.DS_Store
+coverage/
+.openai/*
+!.openai/hosting.json
+work/
