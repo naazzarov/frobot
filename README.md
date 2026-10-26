@@ -109,3 +109,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Keep work small, test the safety boundar
 ## License
 
 [MIT](LICENSE).
+
+The interface bundles Manrope by the Manrope Project Authors, licensed under the [SIL Open Font License](docs/fonts/Manrope-OFL.txt). The font is served locally; no third-party font request is needed.

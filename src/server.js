@@ -15,6 +15,7 @@ const mime = {
   "/core.js": "text/javascript; charset=utf-8",
   "/styles.css": "text/css; charset=utf-8",
   "/favicon.svg": "image/svg+xml",
+  "/fonts/manrope.ttf": "font/ttf",
 };
 const equal = (a, b) => {
   const x = Buffer.from(a),

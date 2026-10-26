@@ -202,13 +202,16 @@ async function mutate(action, input = {}) {
 function sidebar() {
   const count = state.approvals.filter((a) => a.status === "pending").length;
   return `<aside class="sidebar ${mobileOpen ? "open" : ""}" aria-label="Main navigation">
- <a href="#overview" class="logo"><span class="logo-mark"><svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><path d="M6 5h21v6H13v5h11v6H13v8H6zM19 0h8v3h-8z"/></svg></span>FROBOT</a><div class="logo-sub">THE COMPANY OPERATING SYSTEM</div>
- <div class="workspace"><span class="workspace-icon">${icon("globe", 16)}</span><div><b>Owner workspace</b><small>${state.companies.length} companies · One vision</small></div></div>
- <div class="sidebar-label">Workspace</div><nav>${nav.map(([id, ico, label]) => `<a class="nav-item ${page === id ? "active" : ""}" href="#${id}" ${page === id ? 'aria-current="page"' : ""}>${icon(ico, 17)}${label}${id === "approvals" && count ? `<span class="count">${count}</span>` : ""}</a>`).join("")}</nav>
- <div class="sidebar-label">Manage</div><a class="nav-item ${page === "integrations" ? "active" : ""}" href="#integrations">${icon("plug", 17)}Integrations</a><a class="nav-item ${page === "settings" ? "active" : ""}" href="#settings">${icon("settings", 17)}Settings</a>
- <div class="sidebar-spacer"></div><a class="nav-item" href="${repo}" target="_blank" rel="noopener">${icon("github", 16)}Open source${icon("arrow", 13)}</a>
- <div class="system-status"><b><span class="dot" ${state.paused ? 'style="background:#ccac73"' : ""}></span>${state.paused ? "Execution paused" : "Owner remains in control"}</b><small>${server ? "SQLite workspace · " + (config.aiConfigured ? "AI drafts enabled" : "Template mode") : "Public sandbox · Stored in this browser"}</small></div>
- <div class="owner"><span class="avatar">O</span><div><b>The Owner</b><small>Root authority</small></div>${icon("shield", 15)}</div></aside>`;
+    <a href="#overview" class="logo"><span class="logo-mark"><svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><path d="M6 5h21v6H13v5h11v6H13v8H6zM19 0h8v3h-8z"/></svg></span>frobot<span class="logo-period">OS</span></a>
+    <div class="logo-sub">BIG IDEAS. SMALL HEADCOUNT.</div>
+    <div class="workspace"><span class="workspace-icon">${icon("globe", 17)}</span><div><b>My ecosystem</b><small>Owner workspace</small></div><span class="workspace-chevron">${icon("down", 13)}</span></div>
+    <div class="sidebar-label">Your workspace</div><nav>${nav.map(([id, ico, label]) => `<a class="nav-item ${page === id ? "active" : ""}" href="#${id}" ${page === id ? 'aria-current="page"' : ""}>${icon(ico, 18)}<span>${label}</span>${id === "approvals" && count ? `<span class="count">${count}</span>` : ""}${page === id ? '<span class="nav-active-dot"></span>' : ""}</a>`).join("")}</nav>
+    <div class="sidebar-label">Make it yours</div><a class="nav-item ${page === "integrations" ? "active" : ""}" href="#integrations">${icon("plug", 18)}Integrations</a><a class="nav-item ${page === "settings" ? "active" : ""}" href="#settings">${icon("settings", 18)}Settings</a>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-promo"><span class="promo-spark">✳</span><h3>Your next company<br>starts with an idea.</h3><p>The workforce comes with it.</p><button data-action="new-company">Launch something ${icon("arrow", 14)}</button><div class="promo-orbit" aria-hidden="true"></div></div>
+    <a class="nav-item source-link" href="${repo}" target="_blank" rel="noopener">${icon("github", 16)}Built in the open ${icon("arrow", 13)}</a>
+    <div class="owner"><span class="avatar">O<span class="owner-dot"></span></span><div><b>The Owner</b><small>You set the direction.</small></div>${icon("shield", 17)}</div>
+  </aside>`;
 }
 function render() {
   const views = {
@@ -222,7 +225,7 @@ function render() {
     integrations: integrationsView,
     settings: settingsView,
   };
-  app.innerHTML = `${sidebar()}<div class="shell"><header class="topbar"><div class="breadcrumbs"><button class="small-icon mobile-menu" data-action="menu" aria-label="Toggle navigation">${icon("menu")}</button>${icon("globe", 14)}<span>Workspace</span>${icon("chevron", 10)}<b>${labels[page]}</b></div><div class="top-actions"><button class="search-trigger" data-action="search">${icon("search", 16)}<span>Search workspace</span><kbd class="key">/</kbd></button><span class="top-divider"></span><button class="small-icon" data-action="notifications" aria-label="View pending approvals">${icon("bell", 17)}${state.approvals.some((a) => a.status === "pending") ? '<span class="notification-dot"></span>' : ""}</button><span class="avatar" style="width:29px;height:29px;background:#e8eddf;color:#6b8055">O</span></div></header><main class="main" id="main" tabindex="-1">${state.paused ? `<div class="sandbox-banner paused-banner">${icon("pause", 14)}<b>All execution is paused.</b> Queued missions will remain on hold until you resume.${button("global-pause", "Resume", "play", "btn-ghost btn-sm")}</div>` : ""}${views[page]()}<footer class="bottom-note"><span>FROBOT v0.1 · One owner. Every company in view.</span><span>${server ? "Persistent workspace" : "Fictional data · No external actions"} · Open source</span></footer></main></div>`;
+  app.innerHTML = `${sidebar()}<div class="shell page-${page}"><header class="topbar"><div class="breadcrumbs"><button class="small-icon mobile-menu" data-action="menu" aria-label="Toggle navigation">${icon("menu")}</button>${icon("globe", 14)}<span>Workspace</span>${icon("chevron", 10)}<b>${labels[page]}</b></div><div class="top-actions"><button class="search-trigger" data-action="search">${icon("search", 16)}<span>Search workspace</span><kbd class="key">/</kbd></button><span class="top-divider"></span><span class="top-mode"><span class="dot"></span>${server ? "PRIVATE WORKSPACE" : "PLAYGROUND"}</span><button class="small-icon" data-action="notifications" aria-label="View pending approvals">${icon("bell", 17)}${state.approvals.some((a) => a.status === "pending") ? '<span class="notification-dot"></span>' : ""}</button><span class="avatar top-avatar">O</span></div></header><main class="main" id="main" tabindex="-1">${state.paused ? `<div class="sandbox-banner paused-banner">${icon("pause", 14)}<b>All execution is paused.</b> Queued missions will remain on hold until you resume.${button("global-pause", "Resume", "play", "btn-ghost btn-sm")}</div>` : ""}${views[page]()}<footer class="bottom-note"><span>FROBOT v0.1 · One owner. Every company in view.</span><span>${server ? "Persistent workspace" : "Fictional data · No external actions"} · Open source</span></footer></main></div>`;
 }
 function head(
   title,
@@ -237,37 +240,53 @@ function banner() {
 }
 function stats() {
   const tasks = scope(state.tasks),
-    agents = scope(state.agents).filter((a) => a.status !== "archived"),
-    done = tasks.filter((t) => t.status === "done").length;
+    agents = scope(state.agents).filter((a) => a.status !== "archived");
   const values = [
     [
-      "Companies",
-      state.companies.filter(
-        (c) => companyFilter === "all" || c.id === companyFilter,
-      ).length,
+      "Your companies",
+      state.companies.length,
       "building",
-      `${state.companies.filter((c) => !c.paused).length} active across your workspace`,
+      "Ventures in your orbit",
+      "blue",
     ],
     [
-      "Active agents",
+      "AI workforce",
       agents.length,
       "agents",
-      "Executive + manager + working staff",
+      "Ready to turn ideas into work",
+      "violet",
     ],
     [
-      "Missions completed",
-      done,
+      "Missions delivered",
+      tasks.filter((t) => t.status === "done").length,
       "check",
-      `${tasks.filter((t) => t.status === "queued").length} queued for execution`,
+      `${tasks.filter((t) => t.status === "queued").length} more ready for their next move`,
+      "mint",
     ],
     [
-      "Awaiting approval",
+      "Your attention",
       pending().length,
       "shield",
-      "Your attention keeps things moving",
+      "Decisions only you can make",
+      "peach",
     ],
   ];
-  return `<div class="stats">${values.map(([label, value, ico, foot]) => `<div class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon(ico, 15)}</span></div><div class="stat-value">${value.toString().padStart(2, "0")}</div><div class="stat-foot"><span class="${ico === "shield" ? "amber" : "green"}">${icon(ico === "shield" ? "clock" : "activity", 10)}</span>${foot}</div></div>`).join("")}</div>`;
+  return `<div class="stats">${values.map(([label, value, ico, foot, tone], i) => `<div class="stat stat-${tone}"><div class="stat-top"><span class="stat-icon">${icon(ico, 19)}</span><span>${label}</span><span class="stat-index">0${i + 1}</span></div><div class="stat-bottom"><div class="stat-value">${String(value).padStart(2, "0")}</div><span class="stat-decoration" aria-hidden="true">${i === 0 ? "↗" : i === 1 ? "✳" : i === 2 ? "✓" : "↗"}</span></div><div class="stat-foot">${foot}</div></div>`).join("")}</div>`;
+}
+function companyVisual(c) {
+  const index = state.companies.findIndex((x) => x.id === c.id);
+  return {
+    index,
+    tone: ["blue", "mint", "peach", "violet"][index % 4],
+    ico:
+      c.sector === "Agriculture"
+        ? "leaf"
+        : c.sector === "Finance"
+          ? "chart"
+          : c.sector === "Brand & Design"
+            ? "spark"
+            : "code",
+  };
 }
 function companyCard(c, full = false) {
   const tasks = state.tasks.filter((t) => t.companyId === c.id),
@@ -277,7 +296,26 @@ function companyCard(c, full = false) {
   const needs = state.approvals.filter(
     (a) => a.companyId === c.id && a.status === "pending",
   ).length;
-  return `<article class="company-card" tabindex="0" role="button" aria-label="Open ${esc(c.name)}" data-action="open-company" data-id="${c.id}"><div class="company-card-top"><span class="company-symbol" style="--company-color:${c.color}">${icon(c.sector === "Agriculture" ? "leaf" : c.sector === "Finance" ? "chart" : c.sector === "Brand & Design" ? "spark" : "code", 20)}</span><span class="pill ${c.paused ? "amber" : ""}"><span class="dot"></span>${c.paused ? "Paused" : "Operational"}</span></div><h3>${esc(c.name)}</h3><div class="company-sector">${esc(c.sector)}</div>${full ? `<p class="company-mission">${esc(c.mission)}</p>` : ""}<div class="company-card-stats"><div><strong>${agents.length}</strong><span>ACTIVE AGENTS</span></div><div><strong>${tasks.filter((t) => t.status === "done").length}<span style="display:inline;font-size:12px;color:#bbc3b1">/${tasks.length}</span></strong><span>MISSIONS DONE</span></div></div><div class="company-card-footer">${icon(needs ? "shield" : "check", 11)}${needs ? `${needs} decision${needs > 1 ? "s need" : " needs"} review` : "All decisions up to date"}${icon("arrow", 12)}</div>${full ? `<div class="company-card-actions">${button("company-pause", c.paused ? "Resume" : "Pause", c.paused ? "play" : "pause", "btn-secondary btn-sm", `data-id="${c.id}"`)}${button("company-mission", "New mission", "plus", "btn-ghost btn-sm", `data-id="${c.id}"`)}</div>` : ""}</article>`;
+  const { index, tone, ico } = companyVisual(c);
+  const completed = tasks.filter((t) => t.status === "done").length;
+  return `<article class="company-card company-${tone} ${full ? "company-full" : ""}">
+    <button class="company-open" data-action="open-company" data-id="${c.id}" aria-label="Open ${esc(c.name)}"><div class="company-art"><span class="company-symbol">${icon(ico, 29)}</span><span class="company-number">0${index + 1}</span><span class="company-art-orbit" aria-hidden="true"></span><span class="company-art-dot" aria-hidden="true"></span><span class="company-art-star" aria-hidden="true">✳</span><span class="company-art-caption">${esc(c.sector.toUpperCase())}</span></div><div class="company-content"><div class="company-card-top"><h3>${esc(c.name)}</h3>${icon("arrow", 16)}</div><div class="company-sector"><span class="dot"></span>${c.paused ? "Execution paused" : "Workforce ready"}</div>${full ? `<p class="company-mission">${esc(c.mission)}</p>` : ""}<div class="company-card-stats"><span>${icon("agents", 13)}<strong>${agents.length}</strong> agents</span><span><strong>${completed}/${tasks.length}</strong> delivered</span></div><div class="company-progress" aria-label="${completed} of ${tasks.length} missions completed"><span style="width:${tasks.length ? (completed / tasks.length) * 100 : 0}%"></span></div><div class="company-card-footer"><span>${needs ? icon("shield", 12) : icon("check", 12)}${needs ? `${needs} decision${needs > 1 ? "s" : ""} to review` : "You're all caught up"}</span><span class="company-card-arrow">↗</span></div></div></button>${full ? `<div class="company-card-actions">${button("company-pause", c.paused ? "Resume" : "Pause", c.paused ? "play" : "pause", "btn-secondary btn-sm", `data-id="${c.id}"`)}${button("company-mission", "New mission", "plus", "btn-ghost btn-sm", `data-id="${c.id}"`)}</div>` : ""}
+  </article>`;
+}
+function orbitGraphic() {
+  const positions = [
+    [66, 9],
+    [72, 65],
+    [0, 66],
+    [3, 8],
+  ];
+  return `<div class="orbit-map"><div class="orbit-caption"><span class="dot"></span>YOUR CONNECTED ECOSYSTEM</div><svg class="orbital-art" viewBox="0 0 500 350" fill="none" aria-hidden="true"><defs><radialGradient id="core-glow"><stop stop-color="#8eaaff"/><stop offset=".42" stop-color="#576eff"/><stop offset=".8" stop-color="#3b3bcb"/><stop offset="1" stop-color="#19175d"/></radialGradient><radialGradient id="ambient"><stop stop-color="#6772ff" stop-opacity=".35"/><stop offset="1" stop-color="#6772ff" stop-opacity="0"/></radialGradient><linearGradient id="orbit-line" x1="30" y1="30" x2="460" y2="300" gradientUnits="userSpaceOnUse"><stop stop-color="#8e9aff" stop-opacity=".08"/><stop offset=".5" stop-color="#c8d0ff" stop-opacity=".8"/><stop offset="1" stop-color="#8e9aff" stop-opacity=".1"/></linearGradient><linearGradient id="glyph" x1="195" y1="120" x2="270" y2="240" gradientUnits="userSpaceOnUse"><stop stop-color="white"/><stop offset="1" stop-color="#acbfff"/></linearGradient><filter id="orb-shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="16" stdDeviation="17" flood-color="#0b0c31" flood-opacity=".65"/></filter><clipPath id="sphere-clip"><circle cx="250" cy="174" r="77"/></clipPath></defs><circle cx="250" cy="174" r="170" fill="url(#ambient)"/><g class="orbital-rings"><ellipse cx="250" cy="174" rx="184" ry="88" transform="rotate(-28 250 174)" stroke="url(#orbit-line)"/><ellipse cx="250" cy="174" rx="184" ry="88" transform="rotate(36 250 174)" stroke="url(#orbit-line)"/><circle cx="250" cy="174" r="125" stroke="#93a5ff" stroke-opacity=".19" stroke-dasharray="3 8"/><circle cx="250" cy="174" r="155" stroke="#93a5ff" stroke-opacity=".1"/><path d="M250 10v328M44 174h412" stroke="#b7c5ff" stroke-opacity=".07" stroke-dasharray="3 6"/></g><g filter="url(#orb-shadow)"><circle cx="250" cy="174" r="79" stroke="#a5b5ff" stroke-opacity=".4"/><circle cx="250" cy="174" r="77" fill="url(#core-glow)"/><g clip-path="url(#sphere-clip)" stroke="#c5d2ff" stroke-opacity=".16"><ellipse cx="250" cy="174" rx="42" ry="77" transform="rotate(27 250 174)"/><ellipse cx="250" cy="174" rx="65" ry="77" transform="rotate(-40 250 174)"/><ellipse cx="250" cy="174" rx="77" ry="30" transform="rotate(-20 250 174)"/></g><path d="M228 138h57v15h-39v20h32v15h-32v28h-18z" fill="#292a9a" transform="translate(3 6)"/><path d="M224 134h57v15h-39v20h32v15h-32v28h-18z" fill="url(#glyph)"/><path d="M262 120h19v6h-19z" fill="white"/></g><g fill="#c8d2ff"><circle cx="102" cy="117" r="3"/><circle cx="393" cy="239" r="3"/><circle cx="334" cy="69" r="2"/><circle cx="179" cy="294" r="2"/><path d="M132 49v10m-5-5h10M390 117v10m-5-5h10" stroke="#b2beff" stroke-opacity=".7"/></g><text x="250" y="293" text-anchor="middle" fill="#d4dbff" font-size="9" font-family="monospace" letter-spacing="3">FROBOT CORE</text><text x="250" y="310" text-anchor="middle" fill="#8c9bdb" font-size="8" font-family="monospace" letter-spacing="1">ONE OWNER. INFINITE POSSIBILITY.</text></svg>${state.companies
+    .slice(0, 4)
+    .map((c, i) => {
+      const v = companyVisual(c);
+      return `<button class="orbit-node orbit-${v.tone}" style="--node-x:${positions[i][0]}%;--node-y:${positions[i][1]}%" data-action="open-company" data-id="${c.id}" aria-label="Open ${esc(c.name)}"><span>${icon(v.ico, 15)}</span><div><b>${esc(c.name)}</b><small>${c.paused ? "PAUSED" : "CONNECTED"}</small></div><span class="node-status"></span></button>`;
+    })
+    .join("")}</div>`;
 }
 function taskRow(t) {
   return `<button class="task-row" data-action="task-detail" data-id="${t.id}"><span class="role-square">${icon(t.department === "CTO" ? "code" : t.department === "CFO" ? "chart" : t.department === "CMO" ? "spark" : "task", 14)}</span><span class="task-title"><b>${esc(t.title)}</b><small>${esc(company(t.companyId)?.name)} <span>·</span> ${t.department} agent <span>·</span> ${relative(t.createdAt)}</small></span>${pill(t.status)}${icon("chevron", 11)}</button>`;
@@ -287,19 +325,31 @@ function eventRow(e) {
 }
 function overviewView() {
   const tasks = scope(state.tasks),
-    ev = scope(state.events);
-  return `${head("Your kingdom, at a glance.", "One owner. A coordinated workforce. Room for your next big idea.", button("new-company", "New company", "plus") + button("new-mission", "Give a directive", "spark", "btn-primary"))}${banner()}${stats()}<section class="company-section"><div class="section-heading"><h2>Your companies <small>${state.companies.length} in your ecosystem</small></h2><a class="text-link" href="#companies">View all companies ${icon("arrow", 12)}</a></div><div class="company-grid">${
+    ev = scope(state.events),
+    count = pending().length;
+  const day = new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
+  return `<div class="overview-heading"><div><div class="eyebrow">YOUR PERSONAL MISSION CONTROL <span>✳</span></div><h1>Your world. <span>In motion.</span></h1></div><div class="overview-heading-right"><span class="today-label">${esc(day)}</span>${button("new-company", "New company", "plus", "btn-secondary")}</div></div>
+  <section class="command-hero"><div class="hero-noise" aria-hidden="true"></div><div class="hero-copy"><span class="hero-kicker"><span class="hero-kicker-line"></span>THE ONE-PERSON COMPANY OS</span><h2>One mind.<br>An entire<br><em>ecosystem.</em></h2><p>You bring the vision. Your AI workforce<br class="hero-break"> helps turn it into the next big thing.</p><div class="hero-actions">${button("new-mission", "Give a directive", "spark", "btn-primary")}<a href="#workforce">Meet your workforce ${icon("arrow", 14)}</a></div><div class="hero-signature"><span class="hero-mini-avatars"><i>C</i><i>T</i><i>F</i><i>+3</i></span><span>Six executive roles. One shared direction.</span></div></div>${orbitGraphic()}<div class="hero-coordinate">F / OS — 001</div></section>
+  <div class="workspace-context"><span>${icon("spark", 13)}${server ? (config.aiConfigured ? "AI drafts enabled · Owner approvals enforced" : "Template workspace · Connect AI in server settings") : "Your playground. Fictional data. Real possibilities."}</span><a href="${repo}" target="_blank" rel="noopener">Explore the source ${icon("arrow", 12)}</a></div>
+  ${stats()}
+  <section class="company-section"><div class="section-heading"><div><div class="eyebrow">BUILT BY YOU. BACKED BY AI.</div><h2>Your corner of the universe.<small>${state.companies.length} companies</small></h2></div><a class="text-link" href="#companies">Explore ecosystem ${icon("arrow", 14)}</a></div><div class="company-grid">${
     state.companies
       .slice(0, 4)
       .map((c) => companyCard(c))
       .join("") ||
     empty(
       "Your first company starts here.",
-      "Create a company to provision its executive and manager workforce.",
+      "Create a company to provision its workforce.",
       "new-company",
       "Create company",
     )
-  }</div></section><div class="lower-grid"><section class="panel"><div class="panel-head"><h2>Mission control <small>Recent directives</small></h2><a class="text-link" href="#missions">View all ${icon("arrow", 11)}</a></div><div class="task-list">${[...tasks].reverse().slice(0, 5).map(taskRow).join("") || empty("No missions yet", "Give your workforce its first directive.", "new-mission", "New directive")}</div><div class="panel-footer"><span class="text-link">${icon("agents", 11)} ${tasks.filter((t) => t.status === "queued").length} missions ready for your workforce</span></div></section><section class="panel"><div class="panel-head"><h2>Live activity</h2><span class="pill"><span class="dot"></span>Workspace events</span></div><div class="activity-list">${[...ev].reverse().slice(0, 4).map(eventRow).join("")}</div><div class="panel-footer"><a class="text-link" href="#activity">Explore the activity log ${icon("arrow", 11)}</a></div></section></div>${pending().length ? `<div class="approval-strip"><span class="approval-icon">${icon("shield", 18)}</span><div><h3>A few decisions need your direction.</h3><p>${pending().length} pending ${pending().length === 1 ? "request" : "requests"} · Review commitments before your agents move forward.</p></div>${button("notifications", "Review decisions", "arrow", "btn-secondary")}</div>` : ""}`;
+  }</div></section>
+  <div class="overview-bottom"><div class="lower-grid"><section class="panel mission-panel"><div class="panel-head"><div><span class="panel-kicker">THE WORK IN MOTION</span><h2>Mission control <span class="heading-count">${tasks.length}</span></h2></div><a class="text-link" href="#missions">View queue ${icon("arrow", 13)}</a></div><div class="task-list">${[...tasks].reverse().slice(0, 4).map(taskRow).join("") || empty("Your next idea belongs here.", "Give your workforce its first directive.", "new-mission", "Give a directive")}</div><div class="panel-footer"><span class="text-link">${icon("agents", 13)}${tasks.filter((t) => t.status === "queued").length} missions ready for their next move</span></div></section><section class="panel activity-panel"><div class="panel-head"><div><span class="panel-kicker">NOTHING FALLS THROUGH</span><h2>The latest signals</h2></div><span class="live-dot"><span></span>LIVE</span></div><div class="activity-list">${[...ev].reverse().slice(0, 4).map(eventRow).join("")}</div><div class="panel-footer"><a class="text-link" href="#activity">Follow the full story ${icon("arrow", 13)}</a></div></section></div>
+  <aside class="owner-decision"><div class="decision-orb" aria-hidden="true">${icon("shield", 30)}</div><span class="panel-kicker">THE HUMAN ADVANTAGE</span><h2>A little judgment.<br>A big difference.</h2><p>${count ? `${count} decisions are waiting for your direction. Great companies still need your point of view.` : "You’re all caught up. Your next big decision will find its way here."}</p><button data-action="notifications">${count ? "Review decisions" : "View approvals"} ${icon("arrow", 15)}<span>${String(count).padStart(2, "0")}</span></button><span class="decision-decoration" aria-hidden="true">✳</span></aside></div>`;
 }
 function empty(title, desc, action, label) {
   return `<div class="empty">${icon("spark", 28)}<h3>${title}</h3><p>${desc}</p>${action ? button(action, label, "plus", "btn-secondary") : ""}</div>`;
