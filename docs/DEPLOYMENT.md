@@ -37,7 +37,7 @@ Serve the public sandbox separately from any private backend so anonymous visito
 
 ## Static sandbox hosting
 
-Serve the contents of `public/` from an HTTPS origin. Native browser modules and `crypto.randomUUID()` require HTTPS or loopback. No build is needed. For local static testing:
+Serve the contents of `public/` from an HTTPS origin, or run `npm run build` to copy them into `dist/` for hosts that expect a build directory. Native browser modules and `crypto.randomUUID()` require HTTPS or loopback. No bundler or dependency installation is needed. For local static testing:
 
 ```sh
 python3 -m http.server 3001 --bind 127.0.0.1 --directory public
@@ -45,7 +45,7 @@ python3 -m http.server 3001 --bind 127.0.0.1 --directory public
 
 The sandbox uses local storage. Each browser has its own fictional workspace. It does not synchronize across devices or visitors. It cannot use the backend AI provider. Its history is not a secure audit store.
 
-The tracked `.openai/hosting.json` identifies the demonstration Site and declares `public` as the static directory. It contains no credential. A fork should register its own Site rather than reusing the original deployment identity. GitHub Pages users may need a custom domain/root deployment because assets currently use root-relative paths.
+The tracked `.openai/hosting.json` identifies the demonstration Site and declares `dist` as the static directory. It contains no credential. A fork should register its own Site rather than reusing the original deployment identity. GitHub Pages users may need a custom domain/root deployment because assets currently use root-relative paths.
 
 ## Backup and recovery
 

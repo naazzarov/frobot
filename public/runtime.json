@@ -1,1 +1,6 @@
-{"app":"frobot","mode":"sandbox","aiConfigured":false,"authRequired":false}
+{
+  "app": "frobot",
+  "mode": "sandbox",
+  "aiConfigured": false,
+  "authRequired": false
+}
