@@ -1,4 +1,7 @@
-import { Engine, ROLES, seedState, templateResult } from "./core.js";
+import { Engine, ROLES, seedState } from "./core.js";
+import { SAMPLE_LEDGER } from "./finance.js";
+import { executeWorkflow } from "./workflow.js";
+import { financePanel, operationsPanel, tracePanel } from "./panels.js";
 
 const icons = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -55,6 +58,8 @@ const nav = [
   ["companies", "building", "Companies"],
   ["workforce", "agents", "AI workforce"],
   ["missions", "task", "Mission control"],
+  ["finance", "chart", "Finance workspace"],
+  ["operations", "activity", "Operations"],
   ["approvals", "shield", "Approvals"],
   ["knowledge", "book", "Knowledge base"],
   ["activity", "activity", "Activity log"],
@@ -78,7 +83,11 @@ let state,
   busy = new Set(),
   toastTimer,
   returnFocus;
-let token = sessionStorage.getItem("frobot-token") || "";
+let csrf = null,
+  operations = null,
+  ledgerFilter = null,
+  pollTimer;
+sessionStorage.removeItem("frobot-token");
 const KEY = "frobot-sandbox-v1";
 const app = document.querySelector("#app");
 const overlay = document.querySelector("#overlay");
@@ -115,6 +124,8 @@ const pill = (status) => {
     pending: ["Pending review", "amber"],
     approved: ["Approved", ""],
     archived: ["Archived", "gray"],
+    cancelled: ["Cancelled", "gray"],
+    withdrawn: ["Withdrawn", "gray"],
   };
   const [label, cls] = map[status] || [status, "gray"];
   return `<span class="pill ${cls}"><span class="dot"></span>${label}</span>`;
@@ -138,10 +149,11 @@ function notify(message) {
 }
 async function api(path, body) {
   const response = await fetch(path, {
+    credentials: "same-origin",
     method: body ? "POST" : "GET",
     headers: {
       ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(body && csrf ? { "X-Frobot-CSRF": csrf } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
@@ -163,25 +175,50 @@ function persistSandbox() {
   }
 }
 async function refresh() {
-  if (server) state = (await api("/api/state")).state;
-  else state = engine.state;
+  if (server) {
+    const [workspace, ops] = await Promise.all([
+      api("/api/state"),
+      api("/api/operations"),
+    ]);
+    state = workspace.state;
+    operations = ops;
+  } else state = engine.state;
 }
 async function mutate(action, input = {}) {
+  let result;
   if (server) {
-    await api(`/api/actions/${action}`, input);
+    const response = await api(`/api/actions/${action}`, input);
+    result = response.result || response.task || response.job;
     await refresh();
   } else {
     if (action === "run") {
       const ctx = engine.begin(input);
       persistSandbox();
       render();
-      await new Promise((r) => setTimeout(r, 700));
-      engine.finish({
-        ...input,
-        runId: ctx.runId,
-        artifact: templateResult(ctx),
-        provider: "template",
-      });
+      try {
+        const output = await executeWorkflow(ctx, null, {
+          checkpoint: async (entry) => {
+            engine.checkpoint({ ...input, runId: ctx.runId, entry });
+            persistSandbox();
+          },
+        });
+        result = engine.finish({
+          ...input,
+          runId: ctx.runId,
+          artifact: output.artifact,
+          verification: output.verification,
+          provider: "deterministic",
+        });
+      } catch (error) {
+        engine.failRun({
+          ...input,
+          runId: ctx.runId,
+          message:
+            "A workflow stage did not pass validation. Inspect its trace.",
+        });
+        persistSandbox();
+        throw error;
+      }
     } else {
       const fn = {
         company: "createCompany",
@@ -189,15 +226,119 @@ async function mutate(action, input = {}) {
         decision: "decide",
         pause: "pause",
         knowledge: "addKnowledge",
+        knowledgeUpdate: "updateKnowledge",
+        source: "importLedger",
+        cancel: "cancel",
         policy: "updatePolicy",
       }[action];
       if (!fn) throw Error("Unknown action.");
-      engine[fn](input);
+      result = engine[fn](input);
     }
     state = engine.state;
     persistSandbox();
   }
   render();
+  return result;
+}
+function financeView() {
+  return financePanel({
+    state,
+    selected: companyFilter,
+    esc,
+    icon,
+    button,
+    head,
+    options,
+    ledgerId: ledgerFilter,
+  });
+}
+function operationsView() {
+  return operationsPanel({ state, server, operations, esc, button, head });
+}
+function financeCompany() {
+  return companyFilter === "all"
+    ? (
+        state.companies.find((c) => c.sector === "Finance") ||
+        state.companies[0]
+      )?.id
+    : companyFilter;
+}
+async function createLedgerMission(ledgerId, runNow = false) {
+  const dataset = state.ledgers.find((d) => d.id === ledgerId);
+  if (!dataset) throw Error("Source not found.");
+  const task = await mutate("mission", {
+    companyId: dataset.companyId,
+    title: "Prepare source-backed cash report",
+    brief:
+      "Summarize source cash movements, identify missing categories and potential duplicates, and show row-level evidence. Prepare an internal report with explicit limitations.",
+    department: "CFO",
+    kind: "research",
+    ledgerId: dataset.id,
+    idempotencyKey: crypto.randomUUID(),
+  });
+  if (runNow) await runTask(task.id);
+  else taskDetail(task.id);
+}
+async function sampleCFO() {
+  if (busy.has("sample-cfo")) return;
+  busy.add("sample-cfo");
+  try {
+    const companyId = financeCompany();
+    if (!companyId) {
+      newCompany();
+      return;
+    }
+    let dataset = state.ledgers.find(
+      (d) =>
+        d.companyId === companyId &&
+        d.synthetic &&
+        d.name === "Fictional cash ledger",
+    );
+    if (!dataset)
+      dataset = await mutate("source", {
+        companyId,
+        name: "Fictional cash ledger",
+        csv: SAMPLE_LEDGER,
+        synthetic: true,
+      });
+    companyFilter = companyId;
+    ledgerFilter = dataset.id;
+    location.hash = "finance";
+    render();
+    await createLedgerMission(dataset.id, true);
+  } finally {
+    busy.delete("sample-cfo");
+    render();
+  }
+}
+
+function sourceModal() {
+  if (!state.companies.length) {
+    newCompany();
+    return;
+  }
+  modal(
+    "Import a source you can inspect.",
+    `<form id="source-form"><div class="modal-body"><div class="modal-note">${server ? "Sources remain in this private backend. AI-enabled runs send a bounded source summary and selected rows to the configured provider." : "This sandbox stores data in your browser. Use fictional records here; no server or bank is connected."}</div>${field("Company", "source-company", `<select id="source-company" name="companyId">${options(financeCompany(), false)}</select>`)}${field("Source name", "source-name", '<input id="source-name" name="name" required maxlength="100" placeholder="e.g. October cash export">')}${field("Choose CSV (optional)", "source-file", '<input id="source-file" type="file" accept=".csv,text/csv">')}${field("CSV records", "source-csv", '<textarea id="source-csv" name="csv" required rows="9" maxlength="250000" placeholder="date,description,amount,currency,category"></textarea>', "Required: date, description, amount, currency. Optional: category. One currency; up to 1,000 rows. Signed amounts; ISO dates.")}<div class="form-error" role="alert"></div></div><footer class="modal-footer">${button("sample-csv", "Sample format", "download")}<button class="btn btn-primary" type="submit">Validate and import</button></footer></form>`,
+  );
+}
+function queueModal(tid) {
+  const t = state.tasks.find((t) => t.id === tid);
+  if (!server) {
+    notify("Background jobs require the Node.js backend.");
+    return;
+  }
+  modal(
+    "Let the worker take it from here.",
+    `<form id="queue-form"><input name="companyId" type="hidden" value="${t.companyId}"><input name="taskId" type="hidden" value="${t.id}"><div class="modal-body"><div class="modal-note">The server must stay online. This queues only this mission; approvals and pause controls still apply. AI runs may make up to four paid requests within the configured daily cap.</div>${field("Start time (optional)", "run-at", '<input id="run-at" name="runAt" type="datetime-local">', "Leave blank to run as worker capacity becomes available. Dates use your local time.")}<div class="form-error" role="alert"></div></div><footer class="modal-footer">${button("close-modal", "Cancel", null)}<button class="btn btn-primary" type="submit">Queue mission</button></footer></form>`,
+  );
+}
+function editKnowledge(kid) {
+  const k = state.knowledge.find((k) => k.id === kid);
+  modal(
+    "Update company knowledge.",
+    `<form id="knowledge-edit-form"><input name="companyId" type="hidden" value="${k.companyId}"><input name="knowledgeId" type="hidden" value="${k.id}"><input name="expectedVersion" type="hidden" value="${k.version}"><div class="modal-body">${field("Title", "knowledge-title", `<input id="knowledge-title" name="title" required maxlength="120" value="${esc(k.title)}">`)}${field("Knowledge", "knowledge-content", `<textarea id="knowledge-content" name="content" required maxlength="12000" rows="8">${esc(k.content)}</textarea>`)}<div class="modal-note">Saving creates version ${k.version + 1}. Previous content remains inspectable in version history.</div><div class="form-error" role="alert"></div></div><footer class="modal-footer"><button class="btn btn-primary" type="submit">Save new version</button></footer></form>`,
+  );
 }
 function sidebar() {
   const count = state.approvals.filter((a) => a.status === "pending").length;
@@ -224,8 +365,10 @@ function render() {
     activity: activityView,
     integrations: integrationsView,
     settings: settingsView,
+    finance: financeView,
+    operations: operationsView,
   };
-  app.innerHTML = `${sidebar()}<div class="shell page-${page}"><header class="topbar"><div class="breadcrumbs"><button class="small-icon mobile-menu" data-action="menu" aria-label="Toggle navigation">${icon("menu")}</button>${icon("globe", 14)}<span>Workspace</span>${icon("chevron", 10)}<b>${labels[page]}</b></div><div class="top-actions"><button class="search-trigger" data-action="search">${icon("search", 16)}<span>Search workspace</span><kbd class="key">/</kbd></button><span class="top-divider"></span><span class="top-mode"><span class="dot"></span>${server ? "PRIVATE WORKSPACE" : "PLAYGROUND"}</span><button class="small-icon" data-action="notifications" aria-label="View pending approvals">${icon("bell", 17)}${state.approvals.some((a) => a.status === "pending") ? '<span class="notification-dot"></span>' : ""}</button><span class="avatar top-avatar">O</span></div></header><main class="main" id="main" tabindex="-1">${state.paused ? `<div class="sandbox-banner paused-banner">${icon("pause", 14)}<b>All execution is paused.</b> Queued missions will remain on hold until you resume.${button("global-pause", "Resume", "play", "btn-ghost btn-sm")}</div>` : ""}${views[page]()}<footer class="bottom-note"><span>FROBOT v0.1 · One owner. Every company in view.</span><span>${server ? "Persistent workspace" : "Fictional data · No external actions"} · Open source</span></footer></main></div>`;
+  app.innerHTML = `${sidebar()}<div class="shell page-${page}"><header class="topbar"><div class="breadcrumbs"><button class="small-icon mobile-menu" data-action="menu" aria-label="Toggle navigation">${icon("menu")}</button>${icon("globe", 14)}<span>Workspace</span>${icon("chevron", 10)}<b>${labels[page]}</b></div><div class="top-actions"><button class="search-trigger" data-action="search">${icon("search", 16)}<span>Search workspace</span><kbd class="key">/</kbd></button><span class="top-divider"></span><span class="top-mode"><span class="dot"></span>${server ? "PRIVATE WORKSPACE" : "PLAYGROUND"}</span><button class="small-icon" data-action="notifications" aria-label="View pending approvals">${icon("bell", 17)}${state.approvals.some((a) => a.status === "pending") ? '<span class="notification-dot"></span>' : ""}</button><span class="avatar top-avatar">O</span></div></header><main class="main" id="main" tabindex="-1">${state.paused ? `<div class="sandbox-banner paused-banner">${icon("pause", 14)}<b>All execution is paused.</b> Queued missions will remain on hold until you resume.${button("global-pause", "Resume", "play", "btn-ghost btn-sm")}</div>` : ""}${views[page]()}<footer class="bottom-note"><span>FROBOT v0.2 · One owner. Every company in view.</span><span>${server ? "Persistent workspace" : "Fictional data · No external actions"} · Open source</span></footer></main></div>`;
 }
 function head(
   title,
@@ -236,7 +379,7 @@ function head(
   return `<div class="page-head"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${sub}</p></div><div class="head-actions">${actions}</div></div>`;
 }
 function banner() {
-  return `<div class="sandbox-banner">${icon("spark", 13)}<span><b>${server ? "Your local operating system" : "Explore the public sandbox"}</b> · ${server ? (config.aiConfigured ? "AI generates drafts. You approve decisions. No external tools are connected." : "Template mode is active. Connect an AI provider in server configuration for generated drafts.") : "Fictional companies. Real workflows. Your changes stay in this browser."}</span><a href="${repo}" target="_blank" rel="noopener">View the code ↗</a></div>`;
+  return `<div class="sandbox-banner">${icon("spark", 13)}<span><b>${server ? "Your local operating system" : "Explore the public sandbox"}</b> · ${server ? (config.aiConfigured ? "AI generates drafts. You approve decisions. No external tools are connected." : "Deterministic workflows are active. Configure an AI provider for model planning and review.") : "Fictional companies. Real workflows. Your changes stay in this browser."}</span><a href="${repo}" target="_blank" rel="noopener">View the code ↗</a></div>`;
 }
 function stats() {
   const tasks = scope(state.tasks),
@@ -335,7 +478,7 @@ function overviewView() {
   return `<div class="overview-heading"><div><div class="eyebrow">YOUR PERSONAL MISSION CONTROL <span>✳</span></div><h1>Your world. <span>In motion.</span></h1></div><div class="overview-heading-right"><span class="today-label">${esc(day)}</span>${button("new-company", "New company", "plus", "btn-secondary")}</div></div>
   <section class="command-hero"><div class="hero-noise" aria-hidden="true"></div><div class="hero-copy"><span class="hero-kicker"><span class="hero-kicker-line"></span>THE ONE-PERSON COMPANY OS</span><h2>One mind.<br>An entire<br><em>ecosystem.</em></h2><p>You bring the vision. Your AI workforce<br class="hero-break"> helps turn it into the next big thing.</p><div class="hero-actions">${button("new-mission", "Give a directive", "spark", "btn-primary")}<a href="#workforce">Meet your workforce ${icon("arrow", 14)}</a></div><div class="hero-signature"><span class="hero-mini-avatars"><i>C</i><i>T</i><i>F</i><i>+3</i></span><span>Six executive roles. One shared direction.</span></div></div>${orbitGraphic()}<div class="hero-coordinate">F / OS — 001</div></section>
   <div class="workspace-context"><span>${icon("spark", 13)}${server ? (config.aiConfigured ? "AI drafts enabled · Owner approvals enforced" : "Template workspace · Connect AI in server settings") : "Your playground. Fictional data. Real possibilities."}</span><a href="${repo}" target="_blank" rel="noopener">Explore the source ${icon("arrow", 12)}</a></div>
-  ${stats()}
+  ${stats()}<section class="finance-launch"><span class="finance-launch-symbol">${icon("chart", 25)}</span><div><span class="eyebrow">GO BEYOND A PLANNING TEMPLATE</span><h3>Meet a CFO workflow with receipts.</h3><p>Source rows → exact calculations → four inspectable stages → a report.</p></div>${button("sample-cfo", "Try the workflow", "arrow", "btn-primary")}</section>
   <section class="company-section"><div class="section-heading"><div><div class="eyebrow">BUILT BY YOU. BACKED BY AI.</div><h2>Your corner of the universe.<small>${state.companies.length} companies</small></h2></div><a class="text-link" href="#companies">Explore ecosystem ${icon("arrow", 14)}</a></div><div class="company-grid">${
     state.companies
       .slice(0, 4)
@@ -391,6 +534,7 @@ function missionsView() {
     ["done", "Completed"],
     ["failed", "Failed"],
     ["rejected", "Rejected"],
+    ["cancelled", "Cancelled"],
   ]
     .map(
       ([v, l]) =>
@@ -530,7 +674,7 @@ function settingsView() {
   const c = company(
     companyFilter === "all" ? state.companies[0]?.id : companyFilter,
   );
-  return `${head("Set the boundaries.", "Your authority is explicit, revocable, and always above the agent hierarchy.", "", "Workspace settings")}<div class="settings-grid"><section class="panel settings-card"><h2>Execution control</h2><p>Pause all companies immediately. Running results are invalidated and their missions return to the queue. You choose when work resumes.</p><div class="settings-fact"><span>Global execution</span><b>${state.paused ? "Paused" : "Enabled"}</b></div><div class="settings-fact"><span>External tool execution</span><b>Unavailable in this release</b></div><div class="settings-fact"><span>Owner review</span><b>Enforced</b></div>${button("global-pause", state.paused ? "Resume all execution" : "Pause all execution", state.paused ? "play" : "pause", state.paused ? "btn-primary" : "btn-danger")}</section><section class="panel settings-card"><h2>Review thresholds</h2><p>Flag proposed spend above a company threshold. All financial commitments still require approval, including those below this threshold.</p><form id="policy-form"><label for="policy-company">Company</label><select id="policy-company" name="companyId">${options(c?.id, false)}</select><label for="spend-limit">Spend review threshold (USD)</label><input id="spend-limit" name="spendLimit" type="number" min="0" max="1000000" required value="${c?.policy.spendLimit || 0}"><div class="form-error" role="alert"></div><button class="btn btn-primary" type="submit">Save threshold</button></form></section><section class="panel settings-card"><h2>Workspace & data</h2><p>${server ? "Your workspace is persisted in a local SQLite database. Export a portable copy or follow the backup guide to preserve the audit database." : "This public demo keeps fictional data in this browser. Export your workspace before clearing browser storage."}</p><div class="settings-fact"><span>Runtime</span><b>${server ? "Node.js + SQLite" : "Browser sandbox"}</b></div><div class="settings-fact"><span>Draft provider</span><b>${config.aiConfigured ? "Anthropic" : "Deterministic templates"}</b></div>${button("export", "Export workspace", "download")}${!server ? button("reset", "Reset demo", "refresh", "btn-ghost") : ""}</section><section class="panel settings-card"><h2>Built in the open</h2><p>FROBOT is an MIT-licensed foundation for owner-controlled companies. Review the architecture, contribute an adapter, or run your own workspace.</p><a class="btn btn-secondary" href="${repo}" target="_blank" rel="noopener">${icon("github", 14)}GitHub repository ${icon("arrow", 12)}</a><div class="policy-note">This release prepares drafts. Real financial, tax, legal, hiring, and physical operations need their own integrations, validation, and deployment controls.</div>${server && config.authRequired ? button("logout", "Lock this session", "lock", "btn-ghost") : ""}</section></div>`;
+  return `${head("Set the boundaries.", "Your authority is explicit, revocable, and always above the agent hierarchy.", "", "Workspace settings")}<div class="settings-grid"><section class="panel settings-card"><h2>Execution control</h2><p>Pause all companies immediately. Running results are invalidated and their missions return to the queue. You choose when work resumes.</p><div class="settings-fact"><span>Global execution</span><b>${state.paused ? "Paused" : "Enabled"}</b></div><div class="settings-fact"><span>External tool execution</span><b>Unavailable in this release</b></div><div class="settings-fact"><span>Owner review</span><b>Enforced</b></div>${button("global-pause", state.paused ? "Resume all execution" : "Pause all execution", state.paused ? "play" : "pause", state.paused ? "btn-primary" : "btn-danger")}</section><section class="panel settings-card"><h2>Review thresholds</h2><p>Flag proposed spend above a company threshold. All financial commitments still require approval, including those below this threshold.</p><form id="policy-form"><label for="policy-company">Company</label><select id="policy-company" name="companyId">${options(c?.id, false)}</select><label for="spend-limit">Spend review threshold (USD)</label><input id="spend-limit" name="spendLimit" type="number" min="0" max="1000000" required value="${c?.policy.spendLimit || 0}"><div class="form-error" role="alert"></div><button class="btn btn-primary" type="submit">Save threshold</button></form></section><section class="panel settings-card"><h2>Workspace & data</h2><p>${server ? "Your workspace is persisted in a local SQLite database. Export a portable copy or follow the backup guide to preserve the audit database." : "This public demo keeps fictional data in this browser. Export your workspace before clearing browser storage."}</p><div class="settings-fact"><span>Runtime</span><b>${server ? "Node.js + SQLite" : "Browser sandbox"}</b></div><div class="settings-fact"><span>Draft provider</span><b>${config.aiConfigured ? "Anthropic" : "Deterministic workflows"}</b></div>${button("export", "Export workspace", "download")}${!server ? button("reset", "Reset demo", "refresh", "btn-ghost") : ""}</section><section class="panel settings-card"><h2>Built in the open</h2><p>FROBOT is an MIT-licensed foundation for owner-controlled companies. Review the architecture, contribute an adapter, or run your own workspace.</p><a class="btn btn-secondary" href="${repo}" target="_blank" rel="noopener">${icon("github", 14)}GitHub repository ${icon("arrow", 12)}</a><div class="policy-note">This release prepares drafts. Real financial, tax, legal, hiring, and physical operations need their own integrations, validation, and deployment controls.</div>${server && config.authRequired ? button("logout", "Lock this session", "lock", "btn-ghost") : ""}</section></div>`;
 }
 function closeModal() {
   overlay.innerHTML = "";
@@ -562,7 +706,7 @@ function newMission(cid) {
     cid || (companyFilter === "all" ? state.companies[0].id : companyFilter);
   modal(
     "Give your workforce a directive.",
-    `<form id="mission-form"><div class="modal-body">${field("Company", "mission-company", `<select id="mission-company" name="companyId">${options(selected, false)}</select>`)}${field("What should we work on?", "title", '<input id="title" name="title" required maxlength="160" placeholder="e.g. Prepare a 30-day product launch plan">')}${field("Direction & expected result", "brief", '<textarea id="brief" name="brief" required maxlength="6000" placeholder="Describe the outcome, constraints, and what a good result looks like."></textarea>')}<div class="form-grid">${field("Lead department", "department", `<select id="department" name="department"><option value="">Auto-route</option>${ROLES.map((r) => `<option value="${r.code}">${r.code} · ${r.area}</option>`).join("")}</select>`)}${field("Action type", "kind", '<select id="kind" name="kind"><option value="draft">Internal draft</option><option value="research">Research plan</option><option value="spend">Financial proposal</option><option value="legal">Legal / tax proposal</option><option value="hiring">Hiring proposal</option><option value="communication">External communication draft</option></select>')}</div><div class="form-grid">${field("Proposed amount (USD)", "amount", '<input id="amount" name="amount" type="number" min="0" max="1000000000" step="0.01" value="0">')}${field("Priority", "priority", '<select id="priority" name="priority"><option value="normal">Normal</option><option value="high">High</option></select>')}</div>${field("Target date (optional)", "deadline", '<input id="deadline" name="deadline" type="date">')}<div class="modal-note">${config.aiConfigured ? "Running sends this brief and this company’s knowledge to Anthropic for a draft." : "This mode produces a planning template without calling an AI service."} Sensitive proposals require your approval before they can run.</div><div class="form-error" role="alert"></div></div><footer class="modal-footer">${button("close-modal", "Cancel", null)}<button class="btn btn-primary" type="submit">${icon("spark", 13)}Create mission</button></footer></form>`,
+    `<form id="mission-form"><div class="modal-body">${field("Company", "mission-company", `<select id="mission-company" name="companyId">${options(selected, false)}</select>`)}${field("What should we work on?", "title", '<input id="title" name="title" required maxlength="160" placeholder="e.g. Prepare a 30-day product launch plan">')}${field("Direction & expected result", "brief", '<textarea id="brief" name="brief" required maxlength="6000" placeholder="Describe the outcome, constraints, and what a good result looks like."></textarea>')}<div class="form-grid">${field("Lead department", "department", `<select id="department" name="department"><option value="">Auto-route</option>${ROLES.map((r) => `<option value="${r.code}">${r.code} · ${r.area}</option>`).join("")}</select>`)}${field("Action type", "kind", '<select id="kind" name="kind"><option value="draft">Internal draft</option><option value="research">Research plan</option><option value="spend">Financial proposal</option><option value="legal">Legal / tax proposal</option><option value="hiring">Hiring proposal</option><option value="communication">External communication draft</option></select>')}</div><div class="form-grid">${field("Proposed amount (USD)", "amount", '<input id="amount" name="amount" type="number" min="0" max="1000000000" step="0.01" value="0">')}${field("Priority", "priority", '<select id="priority" name="priority"><option value="normal">Normal</option><option value="high">High</option></select>')}</div>${field("Target date (optional)", "deadline", '<input id="deadline" name="deadline" type="date">')}<div class="modal-note">${config.aiConfigured ? "Running sends this brief and bounded company context to Anthropic for up to four role-specific requests." : "This mode runs deterministic planning and review without calling an AI service."} Sensitive proposals require your approval before they can run.</div><div class="form-error" role="alert"></div></div><footer class="modal-footer">${button("close-modal", "Cancel", null)}<button class="btn btn-primary" type="submit">${icon("spark", 13)}Create mission</button></footer></form>`,
   );
 }
 function taskDetail(tid) {
@@ -572,7 +716,7 @@ function taskDetail(tid) {
   const messages = state.messages.filter((m) => m.taskId === t.id);
   modal(
     "Mission workspace",
-    `<div class="modal-body"><div>${miniCompany(t.companyId)}</div><h2 class="detail-title">${esc(t.title)}</h2><div class="detail-meta">${pill(t.status)}<span>${t.department} agent</span><span>Created ${dateLabel(t.createdAt)}</span><span>${esc(t.priority)} priority</span>${t.deadline ? `<span>Target ${dateLabel(t.deadline)}</span>` : ""}</div><div class="message-chain"><b>Owner</b>${icon("arrow", 11)}<b>${t.department}</b>${icon("arrow", 11)}<b>Department manager</b>${icon("arrow", 11)}<b>Task specialist</b></div><section class="detail-section"><h3>Owner directive</h3><p>${esc(t.brief)}</p></section>${t.risk.length ? `<div class="risk-reasons">${icon("shield", 13)} ${t.risk.map(esc).join(" · ")}${t.amount ? `<br>Proposed: $${t.amount.toLocaleString()} USD` : ""}${approval?.note ? `<br>Owner decision: ${esc(approval.note)}` : ""}</div>` : ""}<div class="detail-actions">${["queued", "failed"].includes(t.status) ? button("run-task", busy.has(t.id) ? "Preparing draft…" : "Run mission", busy.has(t.id) ? "refresh" : "play", "btn-primary", `data-id="${t.id}" ${busy.has(t.id) || state.paused ? "disabled" : ""}`) : ""}${approval?.status === "pending" ? button("review", "Review decision", "shield", "btn-primary", `data-id="${approval.id}"`) : ""}${t.artifact ? button("download-result", "Download deliverable", "download", "btn-secondary", `data-id="${t.id}"`) : ""}</div>${t.error ? `<div class="risk-reasons">${esc(t.error)}</div>` : ""}${t.artifact ? `<section class="detail-section"><h3>Deliverable · ${t.provider === "anthropic" ? "AI-generated draft" : "Planning template"}</h3><pre class="detail-artifact">${esc(t.artifact)}</pre></section>` : ""}<section class="detail-section"><h3>Mission history</h3>${state.events
+    `<div class="modal-body"><div>${miniCompany(t.companyId)}</div><h2 class="detail-title">${esc(t.title)}</h2><div class="detail-meta">${pill(t.status)}<span>${t.department} agent</span><span>Created ${dateLabel(t.createdAt)}</span><span>${esc(t.priority)} priority</span>${t.deadline ? `<span>Target ${dateLabel(t.deadline)}</span>` : ""}</div><div class="message-chain"><b>Owner</b>${icon("arrow", 11)}<b>${t.department}</b>${icon("arrow", 11)}<b>Department manager</b>${icon("arrow", 11)}<b>Task specialist</b></div><section class="detail-section"><h3>Owner directive</h3><p>${esc(t.brief)}</p></section>${t.risk.length ? `<div class="risk-reasons">${icon("shield", 13)} ${t.risk.map(esc).join(" · ")}${t.amount ? `<br>Proposed: $${t.amount.toLocaleString()} USD` : ""}${approval?.note ? `<br>Owner decision: ${esc(approval.note)}` : ""}</div>` : ""}<div class="detail-actions">${["queued", "failed"].includes(t.status) ? button("run-task", busy.has(t.id) ? "Preparing draft…" : "Run mission", busy.has(t.id) ? "refresh" : "play", "btn-primary", `data-id="${t.id}" ${busy.has(t.id) || state.paused ? "disabled" : ""}`) : ""}${approval?.status === "pending" ? button("review", "Review decision", "shield", "btn-primary", `data-id="${approval.id}"`) : ""}${t.artifact ? button("download-result", "Download deliverable", "download", "btn-secondary", `data-id="${t.id}"`) : ""}</div>${server && ["queued", "failed"].includes(t.status) ? button("queue-task", "Queue in background", "clock", "btn-secondary", `data-id="${t.id}"`) : ""}${["queued", "running", "failed", "awaiting_approval"].includes(t.status) ? button("cancel-task", "Cancel mission", "close", "btn-danger", `data-id="${t.id}"`) : ""}${button("refresh-task", "Refresh status", "refresh", "btn-ghost", `data-id="${t.id}"`)}${tracePanel(t, esc)}${t.error ? `<div class="risk-reasons">${esc(t.error)}</div>` : ""}${t.artifact ? `<section class="detail-section"><h3>Deliverable · ${t.verification ? "Source-backed cash report" : t.provider === "anthropic" ? "AI-generated draft" : "Deterministic workflow result"}</h3><pre class="detail-artifact">${esc(t.artifact)}</pre></section>` : ""}<section class="detail-section"><h3>Mission history</h3>${state.events
       .filter((e) => e.taskId === t.id)
       .reverse()
       .map(eventRow)
@@ -582,6 +726,7 @@ function taskDetail(tid) {
     "",
     true,
   );
+  overlay.querySelector(".drawer").dataset.taskId = tid;
 }
 function review(aid) {
   const a = state.approvals.find((a) => a.id === aid);
@@ -648,6 +793,46 @@ async function runTask(tid) {
 }
 async function action(action, target) {
   switch (action) {
+    case "sample-cfo":
+      await sampleCFO();
+      break;
+    case "import-source":
+      sourceModal();
+      break;
+    case "sample-csv":
+      download("frobot-fictional-ledger.csv", SAMPLE_LEDGER, "text/csv");
+      break;
+    case "ledger-mission":
+      await createLedgerMission(target.dataset.id);
+      break;
+    case "export-source": {
+      const dataset = state.ledgers.find((d) => d.id === target.dataset.id);
+      download("frobot-source.json", JSON.stringify(dataset, null, 2));
+      break;
+    }
+    case "queue-task":
+      queueModal(target.dataset.id);
+      break;
+    case "cancel-task": {
+      const t = state.tasks.find((t) => t.id === target.dataset.id);
+      await mutate("cancel", { companyId: t.companyId, taskId: t.id });
+      taskDetail(t.id);
+      notify("Mission cancelled. Stale results cannot complete it.");
+      break;
+    }
+    case "refresh-task":
+      await refresh();
+      render();
+      taskDetail(target.dataset.id);
+      break;
+    case "refresh-operations":
+      await refresh();
+      render();
+      notify("Observed operations refreshed.");
+      break;
+    case "edit-knowledge":
+      editKnowledge(target.dataset.id);
+      break;
     case "menu":
       mobileOpen = !mobileOpen;
       render();
@@ -733,7 +918,19 @@ async function action(action, target) {
       const k = state.knowledge.find((k) => k.id === target.dataset.id);
       modal(
         esc(k.title),
-        `<div class="modal-body">${miniCompany(k.companyId)}<section class="detail-section"><pre class="detail-artifact">${esc(k.content)}</pre></section></div>`,
+        `<div class="modal-body">${miniCompany(k.companyId)}<section class="detail-section"><pre class="detail-artifact">${esc(k.content)}</pre></section>${button("edit-knowledge", "Edit knowledge", "book", "btn-primary", `data-id="${k.id}"`)}${
+          k.revisions?.length
+            ? `<section class="detail-section"><h3>Version history</h3>${[
+                ...k.revisions,
+              ]
+                .reverse()
+                .map(
+                  (r) =>
+                    `<details class="trace-step"><summary>Version ${r.version} · ${esc(r.title)}</summary><pre class="detail-artifact">${esc(r.content)}</pre></details>`,
+                )
+                .join("")}</section>`
+            : ""
+        }</div>`,
       );
       break;
     }
@@ -790,8 +987,8 @@ async function action(action, target) {
       notify("A fresh fictional workspace is ready.");
       break;
     case "logout":
-      token = "";
-      sessionStorage.removeItem("frobot-token");
+      await api("/api/logout", {});
+      csrf = null;
       location.reload();
       break;
   }
@@ -865,6 +1062,15 @@ document.addEventListener("keydown", (event) => {
 });
 document.addEventListener("change", (event) => {
   const el = event.target;
+  if (el.id === "finance-company") {
+    companyFilter = el.value;
+    ledgerFilter = null;
+    render();
+  }
+  if (el.id === "ledger-filter") {
+    ledgerFilter = el.value;
+    render();
+  }
   if (el.id === "company-filter") {
     companyFilter = el.value;
     render();
@@ -940,6 +1146,9 @@ document.addEventListener("submit", async (event) => {
       "knowledge-form",
       "policy-form",
       "login-form",
+      "source-form",
+      "queue-form",
+      "knowledge-edit-form",
     ].includes(form.id)
   )
     return;
@@ -950,12 +1159,37 @@ document.addEventListener("submit", async (event) => {
   controls.forEach((b) => (b.disabled = true));
   try {
     if (form.id === "login-form") {
-      token = data.token;
+      const session = await api("/api/session", { token: data.token });
+      csrf = session.csrf;
       await refresh();
-      sessionStorage.setItem("frobot-token", token);
+      startPolling();
       closeModal();
       render();
       return;
+    }
+    if (form.id === "source-form") {
+      const dataset = await mutate("source", data);
+      companyFilter = dataset.companyId;
+      ledgerFilter = dataset.id;
+      closeModal();
+      location.hash = "finance";
+      render();
+      notify(
+        "Source validated and imported. No source row was silently dropped.",
+      );
+    }
+    if (form.id === "queue-form") {
+      if (data.runAt) data.runAt = new Date(data.runAt).toISOString();
+      await mutate("enqueue", data);
+      closeModal();
+      location.hash = "operations";
+      render();
+      notify("Mission persisted in the background queue.");
+    }
+    if (form.id === "knowledge-edit-form") {
+      await mutate("knowledgeUpdate", data);
+      closeModal();
+      notify("Knowledge version saved with previous content retained.");
     }
     if (form.id === "company-form") {
       await mutate("company", data);
@@ -1015,7 +1249,7 @@ window.addEventListener("hashchange", routePage);
 function login() {
   modal(
     "Unlock your Owner workspace.",
-    `<form id="login-form"><div class="modal-body"><div class="modal-note">This server requires its configured Owner access token. It is kept only in this tab’s session storage.</div>${field("Owner token", "token", '<input id="token" name="token" type="password" required autocomplete="current-password">')}<div class="form-error" role="alert"></div></div><footer class="modal-footer"><button class="btn btn-primary" type="submit">Unlock workspace</button></footer></form>`,
+    `<form id="login-form"><div class="modal-body"><div class="modal-note">This server requires its configured Owner access token. The credential is exchanged for an expiring HttpOnly session cookie. It is not saved in browser storage.</div>${field("Owner token", "token", '<input id="token" name="token" type="password" required autocomplete="current-password">')}<div class="form-error" role="alert"></div></div><footer class="modal-footer"><button class="btn btn-primary" type="submit">Unlock workspace</button></footer></form>`,
   );
 }
 async function boot() {
@@ -1035,6 +1269,8 @@ async function boot() {
   }
   if (server) {
     try {
+      const session = await api("/api/session");
+      csrf = session.csrf;
       await refresh();
     } catch (e) {
       if (e.status === 401) {
@@ -1046,6 +1282,8 @@ async function boot() {
           events: [],
           messages: [],
           knowledge: [],
+          ledgers: [],
+          modelCalls: [],
           paused: false,
         };
         render();
@@ -1075,21 +1313,74 @@ async function boot() {
     persistSandbox();
   }
   routePage();
-  if (server)
-    setInterval(async () => {
-      if (
-        overlay.firstChild ||
-        document.hidden ||
-        busy.size ||
-        ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)
-      )
-        return;
-      try {
-        await refresh();
-        render();
-      } catch {
-        /* Foreground actions display connection errors. */
-      }
-    }, 10000);
+  startPolling();
 }
+function startPolling() {
+  if (!server || pollTimer) return;
+  pollTimer = setInterval(async () => {
+    if (
+      document.hidden ||
+      busy.size ||
+      overlay.querySelector("form") ||
+      ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)
+    )
+      return;
+    const drawer = overlay.querySelector(".drawer"),
+      tid = drawer?.dataset.taskId,
+      previousTask = state.tasks.find((t) => t.id === tid)?.updatedAt,
+      scroll = drawer?.scrollTop || 0;
+    const revision = state.revision,
+      previousOps = JSON.stringify(operations);
+    try {
+      await refresh();
+      if (
+        state.revision !== revision ||
+        JSON.stringify(operations) !== previousOps
+      ) {
+        render();
+        if (
+          tid &&
+          state.tasks.find((t) => t.id === tid)?.updatedAt !== previousTask
+        ) {
+          taskDetail(tid);
+          overlay.querySelector(".drawer").scrollTop = scroll;
+        }
+      }
+    } catch (e) {
+      if (e.status === 401) {
+        state = {
+          companies: [],
+          agents: [],
+          tasks: [],
+          approvals: [],
+          events: [],
+          messages: [],
+          knowledge: [],
+          ledgers: [],
+          modelCalls: [],
+          paused: false,
+        };
+        render();
+        login();
+      }
+    }
+  }, 3000);
+}
+document.addEventListener("change", async (event) => {
+  if (event.target.id !== "source-file") return;
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const error = event.target.closest("form").querySelector(".form-error");
+  if (file.size > 250000) {
+    error.textContent = "CSV must be no larger than 250,000 bytes.";
+    return;
+  }
+  try {
+    document.querySelector("#source-csv").value = await file.text();
+    const name = document.querySelector("#source-name");
+    if (!name.value) name.value = file.name.slice(0, 100);
+  } catch {
+    error.textContent = "Could not read this file.";
+  }
+});
 boot();

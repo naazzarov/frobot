@@ -1,82 +1,46 @@
-# HTTP API
+# FROBOT v0.2 Owner API
 
-All state and mutation endpoints require `Authorization: Bearer <owner-token>` when `FROBOT_OWNER_TOKEN` is set. `GET /api/health` is public. Mutations require a JSON object and `Content-Type: application/json`, with a maximum 64 KiB body. This is an Owner API, not an API exposed to untrusted agents.
+This is a trusted Owner API, not an API for untrusted agent principals. State endpoints intentionally expose all companies to the Owner. The public sandbox has no backend API.
+
+## Authentication
+
+When `FROBOT_OWNER_TOKEN` is configured, every private endpoint requires either a valid browser session or `Authorization: Bearer <owner-token>` for CLI clients.
+
+- `POST /api/session` with `{ "token": "<owner-token>" }`: sets an expiring HttpOnly/SameSite cookie and returns `csrf` and `expires`. Login is throttled after eight failed attempts per IP over 15 minutes.
+- `GET /api/session`: returns session metadata and CSRF for an authenticated session.
+- `POST /api/logout`: revokes the session and clears its cookie. Requires the session’s CSRF header.
+- Browser mutations send `X-Frobot-CSRF: <csrf>` with the cookie. The Owner credential is not saved in browser storage.
+- `FROBOT_SECURE_COOKIE=true` adds the Secure flag. Use this behind HTTPS; the server itself does not terminate TLS.
 
 ## Read endpoints
 
-- `GET /api/health`: application name, version, authentication requirement, provider configuration flag. No secrets.
-- `GET /api/state`: `{ "state": { ...workspace } }`, including all companies visible to the Owner.
-- `GET /api/audit`: chain verification, sequential hash records, and structured handoff messages.
+- `GET /api/health` and `/runtime.json`: public non-secret runtime metadata. This does not validate live provider access.
+- `GET /api/state`: `{ "state": ... }`, including company sources, workflow traces, knowledge versions, and safe request-usage metadata.
+- `GET /api/audit`: local hash-chain verification, event records, and handoff messages.
+- `GET /api/operations`: worker capacity, UTC-day request reservations and reported tokens, chain verification, and job history. Internal lease tokens are omitted.
 
 ## Actions
 
-All actions are `POST /api/actions/<action>`.
+All actions use `POST /api/actions/<action>` and a JSON object. The default body limit is 64 KiB; `source` allows 400,000 bytes. Source CSV text itself is capped at 250,000 characters and 1,000 rows. API mutations are limited to 120 requests per remote IP per minute. Reverse-proxy clients share the proxy’s remote-IP bucket; forwarded IP headers are not trusted.
 
-### company
+- `company`: `{ "name": "Example", "sector": "Technology", "mission": "Build useful tools." }`.
+- `mission`: `{ "companyId": "...", "title": "Cash report", "brief": "...", "department": "CFO", "kind": "research", "ledgerId": "...", "priority": "normal", "idempotencyKey": "..." }`. Department, source, deadline, and idempotency key are optional. A source-backed task must use CFO and a source from the same company. Action types remain draft/research/spend/legal/hiring/communication.
+- `decision`: `{ "companyId": "...", "approvalId": "...", "decision": "approve", "note": "Prepare a draft only." }`. The alternative is reject. Notes are required. Decisions cannot be replayed; scope binds to the exact task payload.
+- `run`: `{ "companyId": "...", "taskId": "..." }`. Executes a queued/failed task synchronously and returns `{ "task": ... }`. Four provider stages may take several minutes. After a disconnected response, inspect task state before retrying.
+- `enqueue`: `{ "companyId": "...", "taskId": "...", "runAt": "2026-12-01T09:00:00Z" }`. Omit `runAt` for as-soon-as-capacity-allows. A valid future schedule is limited to 30 days. Returns HTTP 202 and `{ "job": ... }`. Duplicate active jobs return the existing job. Schedules require the Node process to remain online.
+- `cancel`: `{ "companyId": "...", "taskId": "..." }`. Cancels a queued/running/failed/awaiting-review task and invalidates in-flight results. Pending approvals become withdrawn. Rejected and completed tasks cannot be cancelled. Create a new mission to revisit a cancelled proposal.
+- `pause`: `{ "paused": true }` globally; add `companyId` for one company, or `companyId` and `agentId` for one supervisor. Resume with false. Unstarted queued jobs wait. Interrupted active jobs are held for inspection, not silently restarted.
+- `source`: `{ "companyId": "...", "name": "Cash export", "csv": "date,description,amount,currency,category\n...", "synthetic": false }`. Sources are immutable; at most eight per company. Re-importing the same normalized rows into the same company is rejected. The `synthetic` label is Owner-supplied metadata, not a verification of provenance.
+- `knowledge`: `{ "companyId": "...", "title": "Policy", "content": "..." }`.
+- `knowledgeUpdate`: `{ "companyId": "...", "knowledgeId": "...", "expectedVersion": 1, "title": "Policy", "content": "Updated..." }`. Rejects stale versions; stores prior content in revision history.
+- `policy`: `{ "companyId": "...", "spendLimit": 250 }`. Changes the review severity threshold; it does not disable approvals below that threshold.
 
-```json
-{"name":"Example Labs","sector":"Technology","mission":"Build useful tools for small teams."}
-```
+Non-run/non-enqueue actions return `{ "ok": true, "result": ... }`. Errors return `{ "error": "..." }`.
 
-Creates an independent roster of executive and manager records. Company names must be unique in the workspace. Up to 30 companies are supported by this pilot.
+## Error statuses
 
-### mission
+400 invalid input; 401 missing authentication/invalid session CSRF; 403 untrusted origin/host or cross-site API call; 404 missing/cross-company record or unknown action; 409 invalid state, stale approval/version, pause, cancellation, or active queue conflict; 413 oversized body; 415 unsupported content type; 429 login/API/provider budget/capacity limit; 502 provider/stage/review validation failure; 503 stopping worker/session capacity.
 
-```json
-{"companyId":"<company-id>","title":"Outline onboarding improvements","brief":"Prepare a practical acceptance checklist.","department":"CTO","kind":"draft","amount":0,"priority":"normal","deadline":"2026-12-01","idempotencyKey":"<client-request-id>"}
-```
+## Migration from v0.1
 
-Department is optional; a deterministic router selects a role. Action kind is one of `draft`, `research`, `spend`, `legal`, `hiring`, or `communication`. Priority is `normal` or `high`. Deadline and idempotency key are optional. Sensitive proposals create an approval and enter `awaiting_approval`.
-
-### decision
-
-```json
-{"companyId":"<company-id>","approvalId":"<approval-id>","decision":"approve","note":"Prepare a draft recommendation only."}
-```
-
-The alternative decision is `reject`. A non-empty note is required. Decisions cannot be replayed.
-
-### run
-
-```json
-{"companyId":"<company-id>","taskId":"<task-id>"}
-```
-
-Runs a queued or failed mission. The HTTP response waits for the provider, up to its 60-second timeout. Check state after a disconnected response before retrying; a task may already have completed. The result is a draft artifact only.
-
-### pause
-
-```json
-{"paused":true}
-```
-
-Add `companyId` to pause one company. Add both `companyId` and `agentId` to pause an executive or manager. Use `false` to resume. Global pause still applies to resumed companies/agents. Pausing invalidates in-flight work in that scope and returns it to the queue.
-
-### knowledge
-
-```json
-{"companyId":"<company-id>","title":"Operating principles","content":"Use small, reversible experiments."}
-```
-
-Creates an immutable v1 text entry in the company knowledge collection. Editing/version history and file uploads are not implemented yet.
-
-### policy
-
-```json
-{"companyId":"<company-id>","spendLimit":250}
-```
-
-Updates the review severity threshold. It does not disable approvals for financial commitments below the threshold.
-
-## Error behavior
-
-- `400`: invalid input or malformed JSON.
-- `401`: missing or invalid Owner token.
-- `403`: unexpected origin/host.
-- `404`: missing record, cross-company record lookup, or unknown endpoint.
-- `409`: incompatible task state, duplicate decision, or paused execution.
-- `413`: body too large.
-- `415`: unsupported body content type.
-- `502`: provider error, with sanitized error text.
-
-Non-run actions return `{ "ok": true, "result": ... }`. A run returns `{ "task": ... }`. Errors return `{ "error": "..." }`. Refresh state after an action for the current workspace.
+Existing workspace snapshots migrate additively when loaded. New job tables are created automatically. Browser-stored Owner tokens are removed; sign in again for a cookie session. Old approved tasks that lack exact-scope authorization cannot run under the new gate; create and approve a fresh mission. Existing completed artifacts remain inspectable. Back up your database before upgrading.

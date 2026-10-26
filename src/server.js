@@ -2,25 +2,23 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { timingSafeEqual } from "node:crypto";
 import { Engine, DomainError } from "../public/core.js";
 import { openStore } from "./store.js";
 import { createProvider } from "./providers.js";
-
+import { createAuth } from "./auth.js";
+import { createRunner } from "./runner.js";
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "../public");
 const mime = {
   "/": "text/html; charset=utf-8",
   "/index.html": "text/html; charset=utf-8",
   "/app.js": "text/javascript; charset=utf-8",
   "/core.js": "text/javascript; charset=utf-8",
+  "/finance.js": "text/javascript; charset=utf-8",
+  "/workflow.js": "text/javascript; charset=utf-8",
+  "/panels.js": "text/javascript; charset=utf-8",
   "/styles.css": "text/css; charset=utf-8",
   "/favicon.svg": "image/svg+xml",
   "/fonts/manrope.ttf": "font/ttf",
-};
-const equal = (a, b) => {
-  const x = Buffer.from(a),
-    y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
 };
 const methods = {
   company: "createCompany",
@@ -28,13 +26,42 @@ const methods = {
   decision: "decide",
   pause: "pause",
   knowledge: "addKnowledge",
+  knowledgeUpdate: "updateKnowledge",
+  source: "importLedger",
+  cancel: "cancel",
   policy: "updatePolicy",
 };
+async function body(req, limit = 65536) {
+  if (!req.headers["content-type"]?.startsWith("application/json"))
+    throw new DomainError("Content-Type must be application/json.", 415);
+  let chunks = [],
+    size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit)
+      throw new DomainError(`Request body exceeds ${limit} bytes.`, 413);
+    chunks.push(chunk);
+  }
+  let input;
+  try {
+    input = JSON.parse(Buffer.concat(chunks).toString());
+  } catch {
+    throw new DomainError("Invalid JSON.", 400);
+  }
+  if (!input || Array.isArray(input) || typeof input !== "object")
+    throw new DomainError("JSON object required.", 400);
+  return input;
+}
 export function createApp({
   store,
   provider = createProvider(),
   ownerToken = "",
   host = "127.0.0.1",
+  secureCookie = false,
+  concurrency = 2,
+  maxDailyCalls = 80,
+  maxCompanyDailyCalls = 40,
+  worker = true,
 } = {}) {
   const loopback = ["127.0.0.1", "localhost", "::1"].includes(host);
   if (!loopback && ownerToken.length < 32)
@@ -44,8 +71,8 @@ export function createApp({
   if (ownerToken && ownerToken.length < 32)
     throw Error("FROBOT_OWNER_TOKEN must be at least 32 characters.");
   const engine = new Engine(store.load()),
-    controllers = new Map();
-  // Recover durable work after process termination. Stale provider results cannot complete these runs.
+    auth = createAuth(ownerToken, { secure: secureCookie }),
+    limits = new Map();
   for (const task of engine.state.tasks.filter((t) => t.status === "running")) {
     task.status = "queued";
     task.runId = null;
@@ -65,6 +92,7 @@ export function createApp({
     const before = structuredClone(engine.state);
     try {
       const value = fn();
+      engine.state.revision = (engine.state.revision || 0) + 1;
       store.save(engine.state);
       return value;
     } catch (e) {
@@ -72,9 +100,23 @@ export function createApp({
       throw e;
     }
   }
+  const runner = createRunner({
+    engine,
+    store,
+    change,
+    provider,
+    concurrency,
+    maxDailyCalls,
+    maxCompanyDailyCalls,
+  });
   const server = createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader(
+      "Permissions-Policy",
+      "camera=(), microphone=(), geolocation=()",
+    );
     res.setHeader(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -115,17 +157,64 @@ export function createApp({
       )
         return json(200, {
           app: "frobot",
-          version: "0.1.0",
-          authRequired: !!ownerToken,
-          aiConfigured: provider.name !== "template",
+          version: "0.2.0",
+          authRequired: auth.required,
+          aiConfigured: provider.name === "anthropic",
+          provider: provider.name,
           mode: "server",
+          backgroundJobs: true,
         });
       if (path.startsWith("/api/")) {
-        if (
-          ownerToken &&
-          !equal(req.headers.authorization || "", `Bearer ${ownerToken}`)
-        )
-          throw new DomainError("Owner authentication required.", 401);
+        if (req.headers["sec-fetch-site"] === "cross-site")
+          throw new DomainError(
+            "Cross-site API requests are not allowed.",
+            403,
+          );
+        if (req.method === "POST") {
+          const at = Date.now();
+          for (const [key, l] of limits) if (l.until <= at) limits.delete(key);
+          const key = req.socket.remoteAddress || "unknown";
+          const l = limits.get(key) || { count: 0, until: at + 60000 };
+          if (limits.size > 2000 || ++l.count > 120)
+            throw new DomainError(
+              "API mutation rate limit reached. Try again in one minute.",
+              429,
+            );
+          limits.set(key, l);
+        }
+        if (path === "/api/session" && req.method === "POST") {
+          const input = await body(req, 4096);
+          if (!auth.required)
+            throw new DomainError(
+              "Owner authentication is not configured.",
+              400,
+            );
+          const result = auth.login(req, input.token);
+          if (result.cookie) res.setHeader("Set-Cookie", result.cookie);
+          return json(
+            result.status,
+            result.error
+              ? { error: result.error }
+              : { csrf: result.csrf, expires: result.expires },
+          );
+        }
+        if (!auth.allowed(req))
+          throw new DomainError(
+            "Owner authentication or a valid session CSRF token is required.",
+            401,
+          );
+        if (path === "/api/session" && req.method === "GET") {
+          const session = auth.session(req);
+          return json(200, {
+            csrf: session?.csrf || null,
+            expires: session?.expires || null,
+            authenticated: true,
+          });
+        }
+        if (path === "/api/logout" && req.method === "POST") {
+          res.setHeader("Set-Cookie", auth.logout(req));
+          return json(200, { ok: true });
+        }
         if (path === "/api/state" && req.method === "GET")
           return json(200, { state: engine.state });
         if (path === "/api/audit" && req.method === "GET")
@@ -134,76 +223,31 @@ export function createApp({
             records: store.audit(),
             messages: engine.state.messages,
           });
+        if (path === "/api/operations" && req.method === "GET")
+          return json(200, {
+            worker: runner.metrics(),
+            audit: store.verify(),
+            jobs: store.jobs
+              .list()
+              .map(({ leaseToken, leaseUntil, ...job }) => job),
+          });
         if (req.method !== "POST" || !path.startsWith("/api/actions/"))
           throw new DomainError("Endpoint not found.", 404);
-        if (!req.headers["content-type"]?.startsWith("application/json"))
-          throw new DomainError("Content-Type must be application/json.", 415);
-        let chunks = [],
-          size = 0;
-        for await (const chunk of req) {
-          size += chunk.length;
-          if (size > 65536)
-            throw new DomainError("Request body exceeds 64 KiB.", 413);
-          chunks.push(chunk);
-        }
-        let input;
-        try {
-          input = JSON.parse(Buffer.concat(chunks).toString());
-        } catch {
-          throw new DomainError("Invalid JSON.", 400);
-        }
-        if (!input || Array.isArray(input) || typeof input !== "object")
-          throw new DomainError("JSON object required.", 400);
-        const action = path.slice("/api/actions/".length);
-        if (action === "run") {
-          // begin is persisted synchronously before awaiting a provider: concurrent duplicates fail closed.
-          const context = change(() => engine.begin(input));
-          const controller = new AbortController();
-          controllers.set(context.runId, controller);
-          try {
-            const artifact = await provider.generate(
-              context,
-              controller.signal,
-            );
-            const task = change(() =>
-              engine.finish({
-                ...input,
-                runId: context.runId,
-                artifact,
-                provider: provider.name,
-              }),
-            );
-            return json(200, { task });
-          } catch (error) {
-            const current = engine.task(input.companyId, input.taskId);
-            if (current.status !== "running" || current.runId !== context.runId)
-              throw new DomainError(
-                "Run was interrupted. Its result has been discarded.",
-                409,
-              );
-            change(() => engine.failRun({ ...input, runId: context.runId }));
-            if (error instanceof DomainError) throw error;
-            throw new DomainError(
-              "Draft provider could not complete this run. Check server configuration and retry.",
-              502,
-            );
-          } finally {
-            controllers.delete(context.runId);
-          }
-        }
+        const action = path.slice("/api/actions/".length),
+          input = await body(req, action === "source" ? 400000 : 65536);
+        if (action === "run")
+          return json(200, { task: await runner.execute(input) });
+        if (action === "enqueue")
+          return json(202, { job: runner.enqueue(input) });
         if (!Object.hasOwn(methods, action))
           throw new DomainError("Unknown action.", 404);
-        const value = change(() => engine[methods[action]](input));
-        if (action === "pause" && input.paused)
-          for (const [runId, controller] of controllers) {
-            if (
-              !engine.state.tasks.some(
-                (t) => t.runId === runId && t.status === "running",
-              )
-            )
-              controller.abort();
-          }
-        return json(200, { ok: true, result: value ?? null });
+        const result = change(() => engine[methods[action]](input));
+        if (action === "pause" || action === "cancel") {
+          runner.interruptInvalid();
+          if (action === "cancel")
+            store.jobs.cancelQueued(input.companyId, input.taskId);
+        }
+        return json(200, { ok: true, result: result ?? null });
       }
       if (!["GET", "HEAD"].includes(req.method))
         throw new DomainError("Method not allowed.", 405);
@@ -227,12 +271,10 @@ export function createApp({
   });
   server.requestTimeout = 30000;
   server.headersTimeout = 15000;
-  server.on("close", () => {
-    for (const controller of controllers.values()) controller.abort();
-  });
-  return { server, engine };
+  if (worker) server.on("listening", () => runner.start());
+  server.on("close", () => void runner.stop());
+  return { server, engine, runner, change };
 }
-
 if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
@@ -245,25 +287,33 @@ if (
   const store = openStore(
     resolve(process.env.FROBOT_DATA_DIR || "data", "frobot.sqlite"),
   );
-  const { server } = createApp({
+  const { server, runner } = createApp({
     store,
     host,
     ownerToken: process.env.FROBOT_OWNER_TOKEN || "",
+    secureCookie: process.env.FROBOT_SECURE_COOKIE === "true",
+    concurrency: Number(process.env.FROBOT_CONCURRENCY || 2),
+    maxDailyCalls: Number(process.env.FROBOT_DAILY_MODEL_CALLS || 80),
+    maxCompanyDailyCalls: Number(
+      process.env.FROBOT_COMPANY_DAILY_MODEL_CALLS || 40,
+    ),
   });
   server.listen(port, host, () =>
     console.log(
-      `FROBOT ready at http://${host.includes(":") ? "[" + host + "]" : host}:${port}\n${process.env.ANTHROPIC_API_KEY ? "AI-generated drafts enabled" : "Template mode · No AI key required"}\n${process.env.FROBOT_OWNER_TOKEN ? "Owner authentication enabled" : "Local demo · Fictional data · Loopback only"}`,
+      `FROBOT v0.2 ready at http://${host.includes(":") ? "[" + host + "]" : host}:${port}\n${process.env.ANTHROPIC_API_KEY ? "Bounded four-stage AI workflows enabled" : "Deterministic workflows · Source-backed ledger calculations available"}\n${process.env.FROBOT_OWNER_TOKEN ? "Owner sessions enabled" : "Local fictional pilot · Loopback only"}`,
     ),
   );
   let closing = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (closing) return;
     closing = true;
+    const timeout = setTimeout(() => process.exit(1), 5000);
+    timeout.unref();
+    await runner.stop();
     server.close(() => {
       store.close();
       process.exit(0);
     });
-    setTimeout(() => process.exit(1), 5000).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

@@ -1,65 +1,76 @@
-# Architecture
+# FROBOT v0.2 architecture
 
-## Runtime
+## One shared domain, two runtimes
+
+The static sandbox and Node backend import `public/core.js`, `finance.js`, and `workflow.js`. The sandbox uses browser storage and deterministic stages. The backend adds SQLite, authentication, a provider gateway, durable jobs, and Operations. Neither runtime registers an external side-effect tool.
 
 ```mermaid
 flowchart TD
-  Owner[Human Owner] --> UI[Dashboard]
-  UI --> API[Authenticated HTTP API]
-  API --> Core[Shared deterministic domain engine]
-  Core --> Review[Approval state machine]
-  Core --> Hierarchy[Executive → Manager → Task specialist]
-  Hierarchy --> Provider[Replaceable draft provider]
-  Provider --> Template[Deterministic template]
-  Provider --> Claude[Anthropic Messages API]
-  Core --> Store[SQLite transaction]
-  Store --> Snapshot[Workspace snapshot]
-  Store --> Audit[Append-only SHA-256 event chain]
+  Owner[Human Owner] --> UI[Company dashboard]
+  UI --> Auth[HttpOnly session + CSRF / CLI bearer token]
+  Auth --> API[Validated Owner API]
+  API --> Engine[Shared domain state machine]
+  Engine --> Approval[Exact-scope approval gate]
+  API --> Jobs[Persisted job queue]
+  Jobs --> Runner[Bounded single-process dispatcher]
+  API --> Runner
+  Runner --> Executive[Executive plan]
+  Executive --> Manager[Manager breakdown]
+  Manager --> Specialist[Specialist draft]
+  Specialist --> Reviewer[Review + output validation]
+  Source[Immutable company CSV source] --> Calc[Integer cash movement calculator]
+  Calc --> Runner
+  Reviewer --> Artifact[Source-backed report / planning deliverable]
+  Engine --> Store[Transactional snapshot + chained audit events]
 ```
 
-The public static sandbox uses the exact same domain engine. It replaces HTTP persistence with browser-local storage and always uses the template provider. It has no server-side company database or live AI configuration.
+## Organization and execution
 
-## Organization
+Every company has six executive and fourteen manager records. A mission creates a temporary staff specialist under a manager. Ledger missions route through the CFO’s Accounting Manager; other missions currently use the first department manager. Staff records archive after completion, failure, cancellation, or interruption.
 
-The Owner is a human root principal, never an AI agent. Each company gets 6 executives and 14 managers. Managers reference their executive by ID. A mission creates a temporary staff specialist under the department’s first manager, and archives it after completion, failure, or interruption. Specialized manager routing is a future enhancement; the initial run path deliberately uses the first department manager.
+The workflow has four explicit contracts:
 
-Executives and managers are role templates and deterministic delegation steps in v0.1. The model generates one bounded specialist draft. There is no claim of independent autonomous executive reasoning.
+- Executive: objective, acceptance criteria, risks.
+- Manager: bounded steps and definition of done.
+- Specialist: a Markdown artifact and exact evidence IDs.
+- Reviewer: pass/fail, issues, and an advisory summary.
 
-## Task lifecycle
+With Anthropic configured, each stage is a separate bounded request. Without a provider key, all stages are deterministic. This is a sequential, bounded role workflow, not independent autonomous executive services. The provider receives a cloned, company-scoped context; it cannot modify trusted calculation inputs. Prior stage outputs are passed as untrusted data. No model output becomes an API action.
 
-```mermaid
-stateDiagram-v2
-  [*] --> queued: internal directive
-  [*] --> awaiting_approval: sensitive proposal
-  awaiting_approval --> queued: Owner approves with note
-  awaiting_approval --> rejected: Owner rejects with note
-  queued --> running: explicit run request
-  running --> done: matching run ID returns an artifact
-  running --> failed: provider failure
-  failed --> running: explicit retry
-  running --> queued: pause or process restart
-```
+Malformed contracts, unknown evidence, numeric claims in finance commentary, and reviewer rejection prevent a final artifact. Finance commentary is qualitative; totals come from the calculator. These checks reduce error surfaces but do not certify semantic truth or eliminate prompt-injection risk. Model review remains advisory.
 
-Every mutation is synchronous until the persistence transaction commits. A provider request starts only after the running state is durable. Duplicate run requests see `running` and fail. Each attempt receives a new run ID. Pause clears that ID before trying to abort the provider. A late response cannot commit against an invalidated ID. Startup requeues interrupted work; it does not automatically rerun or create a second paid request.
+## Source-backed finance
 
-Idempotency keys prevent repeated mission creation within a company. Provider requests are not automatically retried, which avoids hidden repeated charges. An Owner can retry failed work explicitly.
+CSV sources contain one supported currency, ISO dates, descriptions, signed decimal amounts, and optional categories. Imports validate quotas and fields; source records are immutable. Duplicate sources are rejected within a company. Possible duplicate transactions remain included in totals and are flagged.
 
-## Decisions and tools
+Amounts convert to exact integer minor units. Inflows, outflows, net movement, months, and expense categories are calculated from every row. Reports include source IDs and bounded row evidence; JSON exports preserve the full source. Cash movement is not profit, an opening/closing bank balance, a reconciliation, or tax advice. No currency conversion occurs.
 
-Task action type, amount, and conservative text checks can require Owner review. Approval releases draft preparation only. No real tools are registered. Future tools must bind approval to the exact action payload and reject any changed payload; keyword detection cannot authorize a bank transfer or outgoing message.
+## State and approvals
 
-Every message carries sender, recipient, intent, payload, priority, deadline, company ID, task ID, and time. Every task and knowledge lookup for execution is scoped by company. This is a single-Owner workspace with shared storage, not hard database tenant isolation or per-agent authentication.
+Tasks are queued, awaiting approval, running, done, failed, rejected, or cancelled. Approval notes bind to an exact serialized company/task payload. A changed payload cannot reuse an earlier decision. Approval releases deliverable preparation only; it never authorizes an external transaction.
 
-## Persistence and audit
+Each run has a fresh run ID. Pausing or cancelling clears it before attempting provider cancellation. Late outputs and checkpoints fail the ID check. Explicit retries use a new run ID and preserve prior audit events; the visible trace represents the current/latest attempt. Startup requeues interrupted task state and marks interrupted jobs failed for inspection, without automatically repeating paid requests.
 
-SQLite uses WAL mode and `synchronous=FULL`. One transaction saves the current workspace JSON snapshot and appends new audit records. Existing audit event prefixes cannot change through the store API. SQL triggers reject audit update/delete operations.
+## Queue and resource controls
 
-For each sequential record, `hash = SHA256(seq + newline + previous_hash + newline + event_json)`. Startup verifies the chain and the snapshot’s event list. Hashes provide local tamper evidence; a privileged host administrator can replace the chain. Use independent signed checkpoints for stronger integrity guarantees.
+Jobs live in a normalized SQLite table with an active-job uniqueness index. Due jobs are atomically claimed with a lease token; heartbeats extend active leases. One dispatcher bounds concurrent provider runs. Schedules survive process restart. Pending approved work runs while the server is online; interrupted active jobs require inspection and explicit retry.
 
-The snapshot makes a local pilot straightforward, but copies and serializes the full workspace per mutation. It is not an appropriate design for a high-volume multi-tenant system. A later release should normalize transactional data, lease jobs, partition tenant records, move artifact bodies to object storage, and add a worker runtime.
+Run only one server process per workspace database. Startup recovery assumes that single-process deployment. Lease fields support local lifecycle control; they do not make the snapshot architecture safe for distributed workers. Queue insertion and domain audit persistence are separate operations; deployments requiring strict cross-record atomicity need a normalized workflow store.
 
-## Technology choices
+The runner persists a reservation before every Anthropic stage request. Global and per-company UTC-day limits include uncertain/failed requests. Completed responses record reported token usage. Caps count requests, not provider billing dollars. There is no hidden automatic retry loop.
 
-The UI uses native browser modules, accessible HTML, and CSS. The server uses built-in Node HTTP, crypto, filesystem, fetch, and SQLite APIs. There are no npm runtime dependencies or external font/image requests. The [Node SQLite documentation](https://nodejs.org/api/sqlite.html) describes the database API. The optional model gateway uses the [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create).
+## Authentication and observability
 
-This initial vertical slice favors a small auditable core. Kubernetes, per-role microservices, vector databases, long-running workflow engines, and object storage are deferred until the pilot demonstrates a need for them.
+Browser login exchanges an Owner credential for an eight-hour HttpOnly, SameSite=Strict session. Only its digest is kept server-side; the CSRF secret is held in memory in the browser. Mutations require CSRF. Sessions expire and restart invalidates them. CLI clients may use the configured bearer token. Login and API mutation attempts are rate-limited. TLS is required across a network; enable Secure cookies behind HTTPS.
+
+Operations shows actual task counts, jobs, completed stage counts, daily reservations, reported tokens, uncertain requests, and audit verification. It is not a revenue, savings, model-quality, or uptime dashboard.
+
+## Persistence and recovery
+
+The store uses SQLite WAL mode and `synchronous=FULL`. Workspace snapshot changes and newly appended audit events commit together. Existing event prefixes cannot be rewritten through the store. SQL triggers reject audit update/delete operations. Sequential SHA-256 hashes and startup checks detect local chain changes; an administrator can still rebuild or replace the file.
+
+The `backup` command uses SQLite `VACUUM INTO` to create a consistent online copy, refuses to overwrite a target, and verifies the restored audit head. Backup/restore is regression-tested. Retention, encryption, offsite storage, RTO/RPO, and independent audit anchoring are deployment responsibilities.
+
+## Technology references
+
+The runtime uses [Node’s SQLite API](https://nodejs.org/api/sqlite.html) and the [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create). There are no npm runtime dependencies. The UI is native browser modules, accessible HTML, CSS, and locally served fonts.

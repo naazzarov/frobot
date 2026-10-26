@@ -1,3 +1,4 @@
+import { parseLedger } from "./finance.js";
 // Shared domain engine: used unchanged by the browser sandbox and Node server.
 export const ROLES = [
   {
@@ -90,6 +91,8 @@ export function emptyState() {
 export class Engine {
   constructor(state = emptyState()) {
     this.state = state;
+    this.state.ledgers ||= [];
+    this.state.modelCalls ||= [];
   }
   company(companyId) {
     return (
@@ -224,6 +227,16 @@ export class Engine {
       );
       if (existing) return existing;
     }
+    const ledgerId = input.ledgerId || null;
+    if (
+      ledgerId &&
+      !this.state.ledgers.some(
+        (d) => d.id === ledgerId && d.companyId === company.id,
+      )
+    )
+      fail("Source not found in this company.", 404);
+    if (ledgerId && code !== "CFO")
+      fail("Ledger workflows must be led by the CFO.");
     const risk = this.risk({ kind, title, brief, amount }, company);
     const task = {
       id: id("task"),
@@ -244,6 +257,10 @@ export class Engine {
       provider: null,
       runId: null,
       staffId: null,
+      ledgerId,
+      trace: [],
+      attempts: 0,
+      verification: null,
     };
     this.state.tasks.push(task);
     const exec = this.state.agents.find(
@@ -264,6 +281,7 @@ export class Engine {
         companyId: company.id,
         taskId: task.id,
         reasons: risk,
+        scope: this.authorizationScope(task),
         status: "pending",
         createdAt: now(),
         decidedAt: null,
@@ -337,6 +355,9 @@ export class Engine {
       fail("Decision must be approve or reject.");
     const note = text(input.note, "Decision note", 1000);
     const task = this.task(company.id, approval.taskId);
+    if (task.status !== "awaiting_approval")
+      fail("Mission no longer awaits this decision.", 409);
+    approval.scope = this.authorizationScope(task);
     approval.status = input.decision === "approve" ? "approved" : "rejected";
     approval.note = note;
     approval.decidedAt = now();
@@ -351,7 +372,18 @@ export class Engine {
     );
     return approval;
   }
-  begin(input) {
+  authorizationScope(task) {
+    return JSON.stringify({
+      companyId: task.companyId,
+      title: task.title,
+      brief: task.brief,
+      department: task.department,
+      kind: task.kind,
+      amount: task.amount,
+      ledgerId: task.ledgerId || null,
+    });
+  }
+  assertRunnable(input) {
     const company = this.company(input.companyId);
     const task = this.task(company.id, input.taskId);
     if (this.state.paused || company.paused)
@@ -364,6 +396,19 @@ export class Engine {
       )
     )
       fail("Owner approval is required.", 409);
+    if (
+      task.risk.length &&
+      !this.state.approvals.some(
+        (a) =>
+          a.taskId === task.id &&
+          a.status === "approved" &&
+          a.scope === this.authorizationScope(task),
+      )
+    )
+      fail(
+        "Approval does not match the exact mission payload. Create a new mission for changed scope.",
+        409,
+      );
     const exec = this.state.agents.find(
       (a) =>
         a.companyId === company.id &&
@@ -371,14 +416,24 @@ export class Engine {
         a.code === task.department,
     );
     const manager = this.state.agents.find(
-      (a) => a.companyId === company.id && a.parentId === exec.id,
+      (a) =>
+        a.companyId === company.id &&
+        a.parentId === exec.id &&
+        (task.ledgerId ? a.name === "Accounting Manager" : true),
     );
     if (exec.paused || manager.paused)
       fail("A supervising agent is paused.", 409);
+    return { company, task, exec, manager };
+  }
+  begin(input) {
+    const { company, task, exec, manager } = this.assertRunnable(input);
     task.status = "running";
     task.runId = id("run");
     task.updatedAt = now();
     task.error = null;
+    task.trace = [];
+    task.verification = null;
+    task.attempts = (task.attempts || 0) + 1;
     const staff = {
       id: id("agent"),
       companyId: company.id,
@@ -412,7 +467,20 @@ export class Engine {
       runId: task.runId,
       knowledge: this.state.knowledge
         .filter((k) => k.companyId === company.id)
-        .map((k) => ({ title: k.title, content: k.content })),
+        .map((k) => ({
+          id: k.id,
+          version: k.version,
+          title: k.title,
+          content: k.content,
+        }))
+        .slice(0, 30),
+      finance: task.ledgerId
+        ? structuredClone(
+            this.state.ledgers.find(
+              (d) => d.id === task.ledgerId && d.companyId === company.id,
+            ),
+          )
+        : null,
     };
   }
   finish(input) {
@@ -424,6 +492,7 @@ export class Engine {
     task.artifact = artifact;
     task.provider = input.provider || "template";
     task.updatedAt = now();
+    task.verification = input.verification || null;
     const staff = this.state.agents.find((a) => a.id === task.staffId);
     staff.status = "archived";
     this.message(task, staff.id, staff.parentId, "result", {
@@ -454,7 +523,8 @@ export class Engine {
     if (task.status !== "running" || task.runId !== input.runId) return;
     task.status = "failed";
     task.error =
-      "The model provider could not complete this run. Check server configuration and retry.";
+      input.message ||
+      "The workflow could not complete. Inspect the stage trace and configuration before retrying.";
     task.updatedAt = now();
     const staff = this.state.agents.find((a) => a.id === task.staffId);
     if (staff) staff.status = "archived";
@@ -520,6 +590,118 @@ export class Engine {
       input.paused ? "execution.paused" : "execution.resumed",
       `${label} ${input.paused ? "paused" : "resumed"} by Owner.`,
     );
+  }
+  checkpoint(input) {
+    const task = this.task(input.companyId, input.taskId);
+    if (task.status !== "running" || task.runId !== input.runId)
+      fail("Run was interrupted.", 409);
+    task.trace ||= [];
+    task.trace.push(structuredClone(input.entry));
+    task.updatedAt = now();
+    this.event(
+      task.companyId,
+      "workflow.stage",
+      `${input.entry.label} completed.`,
+      input.entry.role,
+      task.id,
+    );
+  }
+  cancel(input) {
+    const task = this.task(input.companyId, input.taskId);
+    if (
+      !["queued", "running", "failed", "awaiting_approval"].includes(
+        task.status,
+      )
+    )
+      fail("This mission cannot be cancelled.", 409);
+    task.status = "cancelled";
+    task.runId = null;
+    task.updatedAt = now();
+    const staff = this.state.agents.find((a) => a.id === task.staffId);
+    if (staff) staff.status = "archived";
+    for (const a of this.state.approvals.filter(
+      (a) => a.taskId === task.id && a.status === "pending",
+    ))
+      a.status = "withdrawn";
+    this.event(
+      task.companyId,
+      "task.cancelled",
+      `Cancelled: ${task.title}`,
+      "Owner",
+      task.id,
+    );
+    return task;
+  }
+  importLedger(input) {
+    this.company(input.companyId);
+    if (
+      this.state.ledgers.filter((d) => d.companyId === input.companyId)
+        .length >= 8
+    )
+      fail(
+        "Up to eight immutable sources per company are supported in this pilot.",
+      );
+    let parsed;
+    try {
+      parsed = parseLedger(input.csv);
+    } catch (error) {
+      fail(error.message);
+    }
+    const canonical = JSON.stringify(
+      parsed.rows.map(
+        ({ id, sourceLine, sourceRecord, duplicateOf, ...row }) => row,
+      ),
+    );
+    if (
+      this.state.ledgers.some(
+        (d) => d.companyId === input.companyId && d.canonical === canonical,
+      )
+    )
+      fail("This source has already been imported.", 409);
+    const dataset = {
+      id: id("ledger"),
+      companyId: input.companyId,
+      name: text(input.name, "Source name", 100),
+      ...parsed,
+      canonical,
+      synthetic: input.synthetic === true,
+      createdAt: now(),
+    };
+    this.state.ledgers.push(dataset);
+    this.event(
+      input.companyId,
+      "source.imported",
+      `Imported ${dataset.rows.length} ${dataset.currency} source rows: ${dataset.name}`,
+    );
+    return dataset;
+  }
+  updateKnowledge(input) {
+    this.company(input.companyId);
+    const entry =
+      this.state.knowledge.find(
+        (k) => k.companyId === input.companyId && k.id === input.knowledgeId,
+      ) || fail("Knowledge not found.", 404);
+    if (Number(input.expectedVersion) !== entry.version)
+      fail("Knowledge changed. Reload before editing.", 409);
+    const title = text(input.title, "Knowledge title", 120),
+      content = text(input.content, "Knowledge content", 12000);
+    entry.revisions ||= [];
+    entry.revisions.push({
+      title: entry.title,
+      content: entry.content,
+      version: entry.version,
+      at: entry.updatedAt || entry.createdAt,
+    });
+    entry.title = title;
+    entry.content = content;
+    entry.version++;
+    entry.updatedAt = now();
+    this.event(
+      input.companyId,
+      "knowledge.updated",
+      `Knowledge updated: ${entry.title} (v${entry.version})`,
+    );
+    return entry;
   }
   addKnowledge(input) {
     this.company(input.companyId);

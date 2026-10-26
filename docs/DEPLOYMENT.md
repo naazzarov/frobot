@@ -1,69 +1,80 @@
-# Running and deploying
+# Running FROBOT v0.2
 
 ## Local pilot
 
-Use Node 22.13+ (Node 24 LTS recommended). Run `npm start` from the repository root. No package installation is required. The first start creates `data/frobot.sqlite` and fictional seed records. The directory, database, WAL, and environment files are ignored by Git.
+Use Node 22.13+ (Node 24 LTS recommended). `npm start` needs no package installation. First start creates a SQLite database and four fictional companies in `data/`. Copy `.env.example` to `.env` for local configuration; both runtime state and real environment files are ignored by Git.
 
-Configuration is loaded from a local `.env` by the npm scripts:
+- `HOST`, `PORT`: default `127.0.0.1:3000`.
+- `FROBOT_DATA_DIR`: defaults to `./data` relative to the working directory.
+- `FROBOT_OWNER_TOKEN`: optional for a fictional loopback pilot; use a strong credential for operational data. Non-loopback binding requires at least 32 characters.
+- `FROBOT_SECURE_COOKIE`: set `true` behind HTTPS. `false` is for loopback HTTP development only.
+- `FROBOT_CONCURRENCY`: 1–8 concurrent runs; default 2.
+- `FROBOT_DAILY_MODEL_CALLS`: global UTC-day reservation cap; default 80.
+- `FROBOT_COMPANY_DAILY_MODEL_CALLS`: per-company cap; default 40.
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`: optional; without a key, deterministic workflows and source calculations still work.
 
-- `HOST`: default `127.0.0.1`.
-- `PORT`: default `3000`.
-- `FROBOT_DATA_DIR`: default `./data`, relative to the current working directory.
-- `FROBOT_OWNER_TOKEN`: optional on loopback; required for all other bind addresses, with at least 32 characters.
-- `ANTHROPIC_API_KEY`: optional server-side provider credential.
-- `ANTHROPIC_MODEL`: optional model override.
+Generate an Owner credential locally using `openssl rand -hex 32`. Put it only in your private `.env` or deployment secret manager. Restart and enter it into the Owner unlock dialog. It is exchanged for an HttpOnly session, not saved in browser storage. Do not put a credential in a URL or public source.
 
-Generate an Owner token locally with `openssl rand -hex 32` and put it in `.env`. Never paste it into GitHub issues, source files, a URL, or a public deployment manifest. Restart the app and enter that token into the Owner unlock dialog.
+## Background jobs
 
-The token grants access to the entire Owner workspace, including all companies. This is not a multi-user permission system.
+Open a queued/failed mission and choose **Queue in background**. Leave the time blank for the next available worker slot, or schedule within 30 days. The browser can close; the Node process must remain online.
+
+Queued jobs survive restart. Interrupted running jobs are marked failed for inspection, while their task returns to queued. Inspect the trace/outcome before explicitly queuing again; upstream billing or an uncertain provider response cannot be rolled back. Failed reviews do not automatically retry. Pause holds unstarted jobs; interrupted active jobs require a fresh explicit run.
+
+Run **one server process per database**. Normalized job records and lease tokens do not make the whole-workspace JSON snapshot safe for distributed workers or horizontal scaling.
+
+## HTTPS and network access
+
+Place a real workspace behind a trusted TLS reverse proxy with authentication and restricted network access. Preserve the public Host header, enable Secure cookies, and do not pass arbitrary client identity headers as authorization. The app has no TLS terminator, SSO provider, encrypted vault, or dollar spending quota. Request-count caps cannot guarantee provider bills.
+
+The rate limiter uses the remote socket IP, not forwarded client headers. Users behind one proxy share that proxy bucket. Session memory is process-local and restart signs browsers out.
+
+Serve the public static sandbox separately. Never attach private runtime credentials or a real Owner database to an anonymous public demo.
 
 ## Docker
 
 ```sh
 cp .env.example .env
-# Edit .env and set a strong FROBOT_OWNER_TOKEN.
+# Set a strong FROBOT_OWNER_TOKEN. Configure HTTPS/Secure cookies as applicable.
 docker compose up --build -d
 ```
 
-The supplied Compose file publishes only `127.0.0.1:3000` on the host, persists `/app/data` in a named volume, and runs the process as the non-root Node user. Inside the container, `HOST=0.0.0.0` is required for port forwarding, so the strong token is mandatory. The image has no npm install step and no application runtime dependencies.
+Compose publishes only `127.0.0.1:3000` on the host. Inside the container, the server binds `0.0.0.0`, requires the strong token, runs as non-root, and persists `/app/data` in a named volume. There is no `npm install` step.
 
-The Docker configuration was source-reviewed but not exercised during the initial build. Run the tests and verify the container in your environment before relying on it.
+The Docker path was source-reviewed, not executed during this build. Validate it in your target environment.
 
-## Network access
+## Static sandbox
 
-Use a trusted TLS reverse proxy with authentication, rate limits, and restricted network access. The app has no built-in TLS, identity provider, IP throttling, or provider spending quota. Do not expose its port directly to the public Internet with real operational data. Origin checks use the request Host header; preserve the public host when proxying. Do not forward arbitrary client-controlled identity headers as authorization.
-
-Serve the public sandbox separately from any private backend so anonymous visitors cannot access the Owner workspace. Never configure a real provider key into the static sandbox or client JavaScript.
-
-## Static sandbox hosting
-
-Serve the contents of `public/` from an HTTPS origin, or run `npm run build` to copy them into `dist/` for hosts that expect a build directory. Native browser modules and `crypto.randomUUID()` require HTTPS or loopback. No bundler or dependency installation is needed. For local static testing:
+`npm run build` copies `public/` into `dist/`. Serve from HTTPS or loopback for native modules and `crypto.randomUUID()`. For local preview:
 
 ```sh
 python3 -m http.server 3001 --bind 127.0.0.1 --directory public
 ```
 
-The sandbox uses local storage. Each browser has its own fictional workspace. It does not synchronize across devices or visitors. It cannot use the backend AI provider. Its history is not a secure audit store.
+The sandbox runs exact finance calculations and deterministic stages locally, stores fictional data per browser, and has no background worker or provider key. Import only fictional records into the public demonstration. No workspace import endpoint exists; JSON exports are for inspection/portability, not automatic restoration.
 
-The tracked `.openai/hosting.json` identifies the demonstration Site and declares `dist` as the static directory. It contains no credential. A fork should register its own Site rather than reusing the original deployment identity. GitHub Pages users may need a custom domain/root deployment because assets currently use root-relative paths.
+The tracked `.openai/hosting.json` declares the original Site identity and `dist`. A fork must register its own Site. Root-relative assets require root/custom-domain hosting; a GitHub Pages project subpath needs asset-path adjustments.
 
-## Backup and recovery
+## Backup and restoration
 
-For a consistent online SQLite backup, use the SQLite backup API or the `sqlite3` CLI `.backup` command. Do not copy only the main `.sqlite` file while WAL writes are active.
+Use the built-in consistent online backup:
 
 ```sh
-# sqlite3 must be installed separately if you use this command.
-sqlite3 data/frobot.sqlite '.backup /your/private/backup/location/frobot.sqlite'
+npm run backup -- /your/private/backup/location/frobot.sqlite
 ```
 
-Backups must stay outside this public repository, in encrypted, access-restricted storage. Define retention and test restores. For a cold backup, stop the process cleanly, preserve the data directory, and restart. Workspace JSON exports are useful for inspection, but there is no supported import endpoint yet; they are not a replacement for a database backup.
+The command opens the source read-only, uses SQLite `VACUUM INTO`, refuses to overwrite a target, applies private filesystem permissions, and verifies the restored audit chain. It copies workspace and job tables together. The regression suite restores a backup and checks its audit head, companies, and queued schedule.
 
-To restore, stop the application, preserve the failed data directory for investigation, and replace the database with a trusted backup. Start the application. Startup verifies its audit chain and event-list agreement; corrupt history stops startup. In-flight missions in a restored snapshot return to queued. Inspect task outcomes before explicitly running them again.
+Keep backups in encrypted, restricted storage outside the repository. Never copy only the main database while WAL writes are active. A JSON workspace export is not a database backup and omits the normalized job queue.
 
-RTO and RPO depend on your backup cadence and restore practice; this release does not promise production recovery targets, automated snapshots, or point-in-time recovery.
+To restore: stop the process, preserve the failed data directory for investigation, install a trusted backup as the workspace database, and start once. Startup validates the event chain and snapshot agreement and recovers interrupted work. Inspect pending jobs and previous results before running work again.
 
-## Operations
+Define backup cadence, retention, RTO/RPO, and restore drills for your deployment. Automated offsite snapshots, point-in-time recovery, and encryption are not supplied by this pilot.
 
-`GET /api/health` provides process readiness and provider configuration metadata. It does not check provider credentials or perform a paid model call. Inspect the activity log and export the audit chain for review. Logs intentionally avoid request bodies, tokens, and raw provider error content. Add external monitoring and authenticated metrics before operating a real service.
+## Upgrade from v0.1
 
-Run one server process per database. Snapshot persistence does not support independent processes writing the same workspace, distributed workers, or horizontal scaling.
+Back up first. Tables and in-memory defaults migrate additively. Existing completed artifacts remain. Browsers sign in again because stored Owner credentials are removed. Previously approved tasks without an exact-scope grant cannot run; create and approve a new mission. There is no destructive schema migration.
+
+## Verification
+
+Run `npm run check`, `npm test`, and `npm run build`. `GET /api/health` verifies the process, not live provider credentials. The authenticated Operations page shows actual jobs, request reservations, reported tokens, and audit-chain checks. Logs intentionally avoid credentials, request bodies, and raw upstream error text. Add external monitoring before a real operational deployment.

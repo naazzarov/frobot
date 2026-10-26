@@ -1,6 +1,6 @@
 {
   "name": "frobot-company-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "An open-source, owner-controlled agentic operating system for one-person companies.",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "node scripts/build.js",
+    "backup": "node --env-file-if-exists=.env scripts/backup.js",
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "test": "node --test",

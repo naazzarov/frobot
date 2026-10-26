@@ -7,6 +7,6 @@
 5. Run `npm run check` and `npm test`. Check the affected browser workflow with keyboard and narrow-screen layouts.
 6. Submit a pull request describing the problem, resulting behavior, validation, and limitations.
 
-Keep domain behavior in `public/core.js` so the server and sandbox share it. Model providers receive a bounded company-scoped context and return text; they must not execute tools or modify state. Future real tool adapters need their own review-bound, payload-specific authorization.
+Keep domain, finance, and stage behavior in the shared `public/core.js`, `finance.js`, and `workflow.js` modules. Providers receive cloned, bounded company context and return typed stage objects; they must not execute tools or modify trusted source state. Future real tool adapters need their own review-bound, payload-specific authorization.
 
 Use synthetic examples. Never attach the internal project brief, a live database, `.env`, customer records, credentials, or logs containing private material. Avoid new dependencies unless their benefit and maintenance cost justify them.

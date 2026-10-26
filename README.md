@@ -2,17 +2,15 @@
 
 **An owner-controlled operating system for one-person companies.**
 
-Direct a company’s work, delegate through an executive–manager–specialist hierarchy, review sensitive proposals, and inspect every handoff from one workspace.
+[Public sandbox](https://frobot-company-os.mintybook4.chatgpt.site) · [Finance workflow](https://frobot-company-os.mintybook4.chatgpt.site/#finance) · [Architecture](docs/ARCHITECTURE.md) · [Run locally](docs/DEPLOYMENT.md)
 
-[Try the public sandbox](https://frobot-company-os.mintybook4.chatgpt.site) · [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) · [Roadmap](docs/ROADMAP.md)
+![FROBOT company operating system](docs/images/dashboard.png)
 
-![FROBOT dashboard with fictional companies, workforce counts, and Owner approvals](docs/images/dashboard.png)
+FROBOT v0.2 combines a multi-company workspace with evidence-backed finance reports, bounded role-specific workflows, durable jobs, Owner approvals, and an inspectable audit history. It is a working single-owner pilot, not a certified autonomous company or multi-tenant production service.
 
-FROBOT v0.1 is a working foundation, not a production autonomous company. It runs without a paid service or third-party runtime dependencies. The optional Anthropic adapter generates drafts; no adapter can send messages, spend money, file taxes, sign documents, execute code, or control physical devices.
+## Run it
 
-## Start in under a minute
-
-Install **Node.js 22.13 or later** (Node 24 LTS recommended), then:
+Install Node.js **22.13+** (Node 24 LTS recommended):
 
 ```sh
 git clone https://github.com/naazzarov/frobot.git
@@ -20,94 +18,95 @@ cd frobot
 npm start
 ```
 
-Open **http://127.0.0.1:3000**. No `npm install` is needed. Node 22 may print an experimental SQLite warning; the application uses the built-in `node:sqlite` module.
+Open **http://127.0.0.1:3000**. No `npm install` or paid AI account is required. Node 22 may print an experimental warning for its built-in SQLite module.
 
-The initial workspace contains four fictional companies. Create your own company, give a directive, and open a queued mission to run it. Without an AI key, the result is an explicitly labeled planning template.
+## Try a useful end-to-end workflow
 
-## What works today
+Click **Try the workflow** on Overview, or open **Finance workspace → Try a CFO workflow**.
 
-- Multi-company dashboard with company-scoped tasks, knowledge, agents, and decisions.
-- Six executive roles: CEO, CTO, CFO, CMO, CBO, and CSO.
-- Fourteen manager roles provisioned automatically for each company.
-- Task-scoped specialist creation and archival with structured delegation messages.
-- Durable task states: queued, running, awaiting approval, completed, failed, and rejected.
-- Owner approval notes and replay protection for sensitive proposals.
-- Global, company, executive, and manager pause controls. Interrupted results are discarded.
-- Knowledge context supplied only from the mission’s company.
-- SQLite persistence, restart recovery, transactional state changes, and a SHA-256 audit chain.
-- Optional server-side Anthropic draft generation through a replaceable provider interface.
-- Responsive dashboard, keyboard search (`/`), new directive shortcut (`N`), and downloadable Markdown results.
-- Workspace and audit exports, input validation, same-origin checks, and optional Owner token authentication.
+1. Import a fictional ledger of 12 transactions into the selected company.
+2. Calculate inflows, outflows, net movement, monthly movements, categories, and source-quality flags using integer amounts.
+3. Execute executive planning, manager breakdown, specialist delivery, and review.
+4. Inspect each stage, the exact source ID and row references, and the downloadable report.
 
-Company isolation here means application-level scoping within one trusted Owner workspace. It does **not** mean independent database tenants or a multi-user security boundary.
+The sample produces **$11,900.50 inflows, $2,071.15 outflows, and $9,829.35 net movement**. These are calculations from fictional source rows, not invented business-performance metrics. Cash movement is not profit or a reconciled bank balance.
 
-## Two ways to explore
+You can import a CSV in the documented format instead. The public sandbox stores data in your browser; use fictional records there. Run your private backend for operational data.
 
-**Public sandbox:** static hosting, fictional data, per-browser local storage, deterministic planning templates. No backend, API credentials, shared company database, or real integrations. Use Settings → Reset demo for a fresh workspace. Do not put private business data into the public demo.
+## What changed in v0.2
 
-**Local backend:** the same interface and domain engine, with SQLite persistence and an optional AI provider. The default binds to loopback only. Setting `FROBOT_OWNER_TOKEN` enables authentication even locally.
+- **Source-backed finance:** strict CSV validation, exact minor-unit calculations, duplicate/uncategorized flags, immutable sources, and row-level evidence.
+- **Four-stage workflows:** separate typed contracts for executive, manager, specialist, and reviewer outputs. Without a key they run deterministically; with Anthropic configured they use up to four bounded model requests.
+- **Output checks:** unknown evidence IDs, malformed stage JSON, rejected reviews, and numeric claims in finance commentary prevent completion. Financial figures come from trusted calculation code.
+- **Durable jobs:** queue immediately or schedule within 30 days. Jobs persist in SQLite, execute while the server is online, and appear in Operations. No silent paid-call retries after interruptions.
+- **Execution control:** bounded concurrency, daily global/per-company model-request caps, cancellation, explicit retry, and stale-result rejection.
+- **Owner sessions:** an Owner credential is exchanged for an expiring HttpOnly/SameSite cookie. Browser mutations require a CSRF token. The Owner credential is not saved in browser storage.
+- **Knowledge versions:** edit with optimistic version checks and inspect earlier content.
+- **Operations and recovery:** actual job/usage counts, audit verification, and a tested SQLite backup/restore command.
 
-## Enable AI-generated drafts
+The original dashboard, six executive roles, fourteen managers per company, task-scoped specialists, approval notes, global/company/supervisor pause controls, and audit exports remain available.
+
+## Enable role-specific AI calls
 
 ```sh
 cp .env.example .env
 ```
 
-Edit `.env` locally:
+Set `ANTHROPIC_API_KEY` in the local `.env` and restart. Never commit a real credential. Configure an Owner token as well before handling operational data.
 
-```dotenv
-ANTHROPIC_API_KEY=your-own-key
-ANTHROPIC_MODEL=claude-sonnet-4-6
-```
+A model-enabled run sends the directive, company mission, bounded company knowledge, trusted finance summaries, selected source rows, and prior stage outputs to Anthropic. The server never sends the API key in prompts or returns it to the browser. Understand that disclosure before using private records.
 
-Restart `npm start`. The dashboard will show **AI drafts enabled**. Running a mission sends its brief, company name/mission, and a bounded subset of that company’s knowledge to Anthropic. Consider that disclosure before adding operational data. Keys are read on the server and are never included in the UI, exports, prompts, or audit events. Model availability depends on your provider account; override the model when needed.
+The provider calls the [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create). Model requests are validated, bounded to 1,800 output tokens per stage, and capped per UTC day. These are **request-count controls, not a dollar billing guarantee**. Failed and uncertain requests count against the cap. No automatic retries are made.
 
-The provider uses the [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create). No live provider call was made during the initial build because no API key was supplied; provider lifecycle and failure behavior are covered with injected providers in tests.
+No live Anthropic request was made during this build because no provider credential was supplied. Contract, failure, context, usage, and budget behavior are tested with injected responses; real provider quality and availability still need credentialed evaluation.
 
-## Validate
+## Two distinct runtimes
+
+**Public sandbox:** static hosting; fictional examples; browser-local storage; deterministic calculations and stages. No shared server database, API key, background worker, or live service connection. Work stops when the browser closes.
+
+**Private backend:** the same interface and domain engine, SQLite persistence, HttpOnly Owner sessions when configured, optional AI stages, durable jobs, schedules, request budgets, and backup tooling. It binds to loopback by default. Jobs continue when the browser closes, as long as the Node process remains online.
+
+## Validation
 
 ```sh
 npm run check
 npm test
+npm run build
+npm run backup -- /your/private/backup/frobot.sqlite
 ```
 
-The test suite covers company context isolation, sensitive-proposal gating, approval replay, duplicate runs, in-flight interruption, persistence, crash recovery, API authentication, origin checks, and audit integrity.
+The regression suite covers source arithmetic/validation, context isolation, evidence rejection, exact approval scope, reviewer failure, session/CSRF/expiry, job recovery/deduplication, concurrency, budgets, cancellation races, and a real online backup/restore. CI runs checks, tests, and the static build on Node 22 and 24.
 
-CI runs on Node 22 and 24. The repository includes a dependency-free Docker image definition and deployment instructions. The Docker path is provided for reproducibility and must be verified in your target environment.
+Docker and Compose configuration is supplied, but it was not executed during this build. Validate it in your deployment environment.
 
-## Repository layout
+## Source layout
 
 ```text
-public/             Dashboard and shared domain engine; also the static sandbox
-  core.js           Company, agent, mission, approval, and pause state machine
-  app.js            Dashboard views, browser API client, sandbox persistence
+public/
+  core.js       Company/agent/task/approval state machine
+  finance.js    CSV validation, exact calculations, source report
+  workflow.js   Four-stage contracts, validation, checkpoints
+  panels.js     Finance, stage trace, and operations views
+  app.js        Dashboard, sandbox adapter, authenticated API client
 src/
-  server.js         HTTP API, authentication, same-origin checks, run lifecycle
-  store.js          SQLite snapshots and append-only hash-chained events
-  providers.js      Template provider and Anthropic draft adapter
-test/               Domain and HTTP integration tests
-docs/               Architecture, API, operations, integrations, roadmap
-.github/workflows/  CI
+  auth.js       Owner sessions, CSRF, login throttling
+  runner.js     Bounded workflow execution and job dispatch
+  providers.js  Deterministic and Anthropic stage adapters
+  store.js      SQLite workspace, normalized jobs, audit chain
+  server.js     HTTP API and startup/recovery lifecycle
+scripts/        Checks, static build, verified online backup
 ```
 
-## Deliberate limits
+## Boundaries that still matter
 
-Executive and manager delegation is currently deterministic. One model call generates a mission’s specialist draft; this is not six independently reasoning executives or a recursive agent runtime. Missions run on Owner request; there is no autonomous background scheduler yet. The queue survives restart, but distributed leases, automatic retries, billing quotas, and horizontal workers are future work.
+This is a bounded sequential workflow, not independently autonomous executives or an unrestricted recursive agent swarm. It has no bank, accounting-service, CRM, email, government, HR, or robotic connection. It cannot move money, contact people, file taxes, sign documents, hire people, or execute generated code. Completion means a deliverable is ready.
 
-External accounting, banking, CRM, communications, cloud documents, HR, tax systems, vector search, voice, and embodied AI are extension points documented in the [roadmap](docs/ROADMAP.md). Their cards accurately display **Not connected**. “Completed” means a draft artifact was produced.
+Application-level company scoping lives inside a trusted single-owner workspace. Transactional workspace state is still a JSON snapshot. Run **one server process per database**; the queue is not a distributed-worker system. Audit hashes provide local tamper evidence, not protection against a host administrator replacing the database.
 
-Audit history is tamper-evident against accidental/local row changes, not immutable against a host administrator. The single-workspace SQLite snapshot architecture is suited to a pilot, not a multi-tenant production SaaS. See [security](SECURITY.md) before operating beyond a local demonstration.
+Production identity, encrypted storage/vaults, hard tenant isolation, retention/deletion policy, independent audit anchoring, live-provider evaluations, and service-specific tool authorization remain necessary. See [SECURITY.md](SECURITY.md), [Deployment](docs/DEPLOYMENT.md), and [Roadmap](docs/ROADMAP.md).
 
-## Public repository hygiene
+## Public-source hygiene and contributions
 
-Only source, fictional seed data, placeholder configuration, and project documentation belong here. `.env`, local databases, runtime state, logs, and dependencies are ignored. The original internal project brief and its personal/company details are intentionally excluded. Code is public; real business records should remain in your own private runtime storage.
+The original internal brief, personal assignments, private business data, runtime databases, logs, environment secrets, and local exports are excluded. `.gitignore` protects common runtime paths, but review files before committing. Backups and exports from a real instance are private even though this source is public.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Keep work small, test the safety boundary you change, and never include credentials or real customer data in issues or pull requests.
-
-## License
-
-[MIT](LICENSE).
-
-The interface bundles Manrope by the Manrope Project Authors, licensed under the [SIL Open Font License](docs/fonts/Manrope-OFL.txt). The font is served locally; no third-party font request is needed.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Source code is [MIT-licensed](LICENSE). Manrope is bundled under the [SIL Open Font License](docs/fonts/Manrope-OFL.txt) and served locally.
