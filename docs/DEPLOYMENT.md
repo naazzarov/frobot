@@ -53,7 +53,7 @@ python3 -m http.server 3001 --bind 127.0.0.1 --directory public
 
 The sandbox runs exact finance calculations and deterministic stages locally, stores fictional data per browser, and has no background worker or provider key. Import only fictional records into the public demonstration. No workspace import endpoint exists; JSON exports are for inspection/portability, not automatic restoration.
 
-The tracked `.openai/hosting.json` declares the original Site identity and `dist`. A fork must register its own Site. Root-relative assets require root/custom-domain hosting; a GitHub Pages project subpath needs asset-path adjustments.
+Deploy `dist/` to a static hosting provider and keep provider-specific project IDs and deployment configuration outside version control. Root-relative assets require root/custom-domain hosting; a GitHub Pages project subpath needs asset-path adjustments.
 
 ## Backup and restoration
 

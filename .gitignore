@@ -10,6 +10,5 @@ data/
 *.log
 .DS_Store
 coverage/
-.openai/*
-!.openai/hosting.json
+.openai/
 work/
